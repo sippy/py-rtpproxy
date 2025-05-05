@@ -1,0 +1,306 @@
+# Test that session timeouts for fully setup sessions and half-setup sessions
+# work correctly and there is no early/late destruction of sessions.
+
+RTPP_TEST_SOCK_UDP4_PORT="%%UDP4_PORT%%"
+RTPP_TEST_SOCK_UDP6_PORT="%%UDP6_PORT%%"
+RTPP_TEST_SOCK_TCP4_PORT="%%TCP4_PORT%%"
+RTPP_TEST_SOCK_TCP6_PORT="%%TCP6_PORT%%"
+RTPP_TEST_SOCK_UNIX="%%LOCAL_SOCK%%"
+RTPP_TEST_SOCK_CUNIX="%%LOCAL_SOCK%%"
+
+. "${BASEDIR}/functions"
+
+substinput() {
+  ${SED} "s|%%CALLID%%|call_id_${i}| ; s|%%RTPP_NS%%|${notify_sock}| ; s|%%RTPP_NS_MSG%%|call${i}_${IPV6}_disconnected_${RTPPID}|" ${1}
+}
+
+geninput() {
+  NFULL=5
+  NHALF=7
+  NHALF_LATE=3
+
+  IPV6="${1}"
+  RTPPID="${2}"
+  i=0
+  while [ ${i} -lt ${NFULL} ]
+  do
+    substinput session_timeouts/full${IPV6}.input
+    i=$((${i} + 1))
+  done
+  cat session_timeouts/stats.input
+  sleep 2
+  cat session_timeouts/stats.input
+  i=0
+  while [ ${i} -lt ${NFULL} ]
+  do
+    substinput session_timeouts/lookup${IPV6}.input
+    i=$((${i} + 1))
+  done
+  while [ ${i} -lt $((${NFULL} + ${NHALF})) ]
+  do
+    substinput session_timeouts/half${IPV6}.input
+    i=$((${i} + 1))
+  done
+  cat session_timeouts/stats.input
+  sleep 3
+  cat session_timeouts/stats.input
+  i=${NFULL}
+  while [ ${i} -lt $((${NFULL} + ${NHALF} - ${NHALF_LATE})) ]
+  do
+    substinput session_timeouts/lookup${IPV6}.input
+    i=$((${i} + 1))
+  done
+  cat session_timeouts/stats.input
+  sleep 6
+  cat session_timeouts/stats.input
+  while [ ${i} -lt $((${NFULL} + ${NHALF})) ]
+  do
+    substinput session_timeouts/lookup${IPV6}.input
+    i=$((${i} + 1))
+  done
+  cat session_timeouts/stats.input
+  sleep 3
+  cat session_timeouts/stats.input
+  i=0
+  while [ ${i} -lt $((${NFULL} + ${NHALF})) ]
+  do
+    substinput session_timeouts/lookup${IPV6}.input
+    i=$((${i} + 1))
+  done
+  cat session_timeouts/stats.input
+  sleep 12
+  cat session_timeouts/stats.input
+  i=0
+  while [ ${i} -lt $((${NFULL} + ${NHALF})) ]
+  do
+    substinput session_timeouts/lookup${IPV6}.input
+    i=$((${i} + 1))
+  done
+  cat session_timeouts/stats.input
+}
+
+RTPP0_ARGS="-d dbug -T10 -b"
+RTPP1_ARGS="${RTPP0_ARGS} -m 12000 -W5"
+RTPP2_ARGS="${RTPP0_ARGS} -m 13000"
+RTPP3_ARGS="-6 ::1 ${RTPP1_ARGS}"
+RTPP4_ARGS="-6 ::1 ${RTPP2_ARGS}"
+
+UDP4_STARTPORT=37223
+UDP6_STARTPORT=43863
+TCP4_STARTPORT=32273
+TCP6_STARTPORT=36834
+
+advance_sockidx() {
+    udp4_port=$((${UDP4_STARTPORT} + ${socket_idx}))
+    udp6_port=$((${UDP6_STARTPORT} + ${socket_idx}))
+    tcp4_port=$((${TCP4_STARTPORT} + ${socket_idx}))
+    tcp6_port=$((${TCP6_STARTPORT} + ${socket_idx}))
+    local_sock="/tmp/rtpproxy${socket_idx}.sock"
+    _socket=`echo ${socket} | sed "s|%%UDP4_PORT%%|${udp4_port}|g ; \
+      s|%%UDP6_PORT%%|${udp6_port}|g ; s|%%TCP4_PORT%%|${tcp4_port}|g ; \
+      s|%%TCP6_PORT%%|${tcp6_port}|g ; s|%%LOCAL_SOCK%%|${local_sock}|g"`
+    socket_idx=$((${socket_idx} + 1))
+    RTPP_LOGFILE="session_timeouts.rlog${j}.${socket_idx}"
+    RTPP_OUTFILE="session_timeouts.rout${j}.${socket_idx}"
+}
+
+run_rtpp_on_stdout()
+{
+  GI_ARG="${1}"
+  RIDX="${2}"
+  shift 2
+  tempfoo="`basename $0`.XXXXX"
+  TMP_PIDFILE=`mktemp -t ${tempfoo}` || return 1
+  (geninput "${GI_ARG}" RTPP${RIDX} | "${RTPPROXY}" -p "${TMP_PIDFILE}" -f \
+   -s stdio: "${@}" > session_timeouts.rout${RIDX} 2> session_timeouts.rlog${RIDX})&
+  RTPP_PID=${!}
+  _i=0
+  while [ ! -s ${TMP_PIDFILE} ]
+  do
+    sleep 1
+    _i=$((${_i} + 1))
+    if [ ${_i} -eq 3 ]
+    then
+      return 1
+    fi
+  done
+}
+
+__beforeexit_cleanup()
+{
+  if [ ! -z "${RTPP_NC_PID}" ]
+  then
+    kill "${RTPP_NC_PID}"
+  fi
+}
+
+run_test()
+{
+  notify_sock="${1}"
+  if [ "${notify_sock}" = "${RTPP_NOTIFY_SOCK_WILD}" ]
+  then
+    client_notify_sock="${RTPP_NOTIFY_SOCK_WILD_BIND}"
+  else
+    client_notify_sock="${notify_sock}"
+  fi
+  case "$client_notify_sock" in
+  tcp:*)
+    client_notify_sock1="${client_notify_sock}:0"
+    ;;
+  *)
+    client_notify_sock1="${client_notify_sock}"
+    ;;
+  esac
+  NSTESTS=`echo ${RTPP_TEST_SOCKETS} | wc -w`
+  RTPP_NC_TOUT=$((${NSTESTS} * 34))
+  set -- `${RTPP_NOTYFY_CLIENT} -D -s "${client_notify_sock1}" -o session_timeouts.tlog \
+   -t ${RTPP_NC_TOUT} -l session_timeouts.tout`
+  RTPP_NC_RC=${?}
+  RTPP_NC_PID="${1}"
+  RTPP_NC_PORT="${2}"
+  if [ -z "${RTPP_NC_PID}" ]
+  then
+    RTPP_NC_RC=1
+  fi
+  case "$client_notify_sock" in
+  tcp:*)
+    if [ -z "${RTPP_NC_PORT}" ]
+    then
+      RTPP_NC_RC=1
+    else
+      client_notify_sock="${client_notify_sock}:${RTPP_NC_PORT}"
+      notify_sock="${notify_sock}:${RTPP_NC_PORT}"
+    fi
+    ;;
+  *)
+    ;;
+  esac
+  report_rc ${RTPP_NC_RC} "Starting rtpp_notify_client.py on ${client_notify_sock}"
+
+  setup_tstart
+  j=1
+  for socket in ${RTPP_TEST_SOCKETS}
+  do
+    if [ "${socket}" = "stdio:" ]
+    then
+      run_rtpp_on_stdout "" ${j}.1 -n "${notify_sock}" ${RTPP1_ARGS}
+      report "rtpproxy #${j}.1 start on ${socket}"
+      RTPP1_PID=${RTPP_PID}
+      run_rtpp_on_stdout "" ${j}.2 -n "${notify_sock}" ${RTPP2_ARGS}
+      report "rtpproxy #${j}.2 start on ${socket}"
+      RTPP2_PID=${RTPP_PID}
+      run_rtpp_on_stdout "6" ${j}.3 -n "${notify_sock}" ${RTPP3_ARGS}
+      report "rtpproxy #${j}.3 start on ${socket}"
+      RTPP3_PID=${RTPP_PID}
+      run_rtpp_on_stdout "6" ${j}.4 -n "${notify_sock}" ${RTPP4_ARGS}
+      report "rtpproxy #${j}.4 start on ${socket}"
+      RTPP4_PID=${RTPP_PID}
+      wait ${RTPP1_PID}
+      report "wait for rtpproxy #${j}.1 shutdown"
+      wait ${RTPP2_PID}
+      report "wait for rtpproxy #${j}.2 shutdown"
+      wait ${RTPP3_PID}
+      report "wait for rtpproxy #${j}.3 shutdown"
+      wait ${RTPP4_PID}
+      report "wait for rtpproxy #${j}.4 shutdown"
+      ${DIFF} session_timeouts/ipv4_1.output session_timeouts.rout${j}.1
+      report "checking rtpproxy #${j}.1 stdout"
+      ${DIFF} session_timeouts/ipv4_2.output session_timeouts.rout${j}.2
+      report "checking rtpproxy #${j}.2 stdout"
+      ${DIFF} session_timeouts/ipv6_1.output session_timeouts.rout${j}.3
+      report "checking rtpproxy #${j}.3 stdout"
+      ${DIFF} session_timeouts/ipv6_2.output session_timeouts.rout${j}.4
+      report "checking rtpproxy #${j}.4 stdout"
+    else
+      socket_idx=0
+      advance_sockidx
+      RTPP1_LOG=${RTPP_LOGFILE}
+      RTPP_SOCKFILE="${_socket}" rtpproxy_start -n "${notify_sock}" ${RTPP1_ARGS}
+      report "rtpproxy #${j}.1 start on ${_socket}"
+      RTPP1_PID="${TMP_PIDFILE}"
+      advance_sockidx
+      RTPP2_LOG=${RTPP_LOGFILE}
+      RTPP_SOCKFILE="${_socket}" rtpproxy_start -n "${notify_sock}" ${RTPP2_ARGS}
+      RTPP2_START_RC=${?}
+      if [ ${RTPP2_START_RC} -ne 0 ]
+      then
+        TMP_PIDFILE=${RTPP1_PID} TMP_LOGFILE="/dev/null" rtpproxy_stop TERM
+      fi
+      report_rc ${RTPP2_START_RC} "rtpproxy #${j}.2 start on ${_socket}"
+      RTPP2_PID="${TMP_PIDFILE}"
+      advance_sockidx
+      RTPP3_LOG=${RTPP_LOGFILE}
+      RTPP_SOCKFILE="${_socket}" rtpproxy_start -n "${notify_sock}" ${RTPP3_ARGS}
+      RTPP3_START_RC=${?}
+      if [ ${RTPP3_START_RC} -ne 0 ]
+      then
+        TMP_PIDFILE=${RTPP1_PID} TMP_LOGFILE="/dev/null" rtpproxy_stop TERM
+        TMP_PIDFILE=${RTPP2_PID} TMP_LOGFILE="/dev/null" rtpproxy_stop TERM
+      fi
+      report_rc ${RTPP3_START_RC}  "rtpproxy #${j}.3 start on ${_socket}"
+      RTPP3_PID="${TMP_PIDFILE}"
+      advance_sockidx
+      RTPP4_LOG=${RTPP_LOGFILE}
+      RTPP_SOCKFILE="${_socket}" rtpproxy_start -n "${notify_sock}" ${RTPP4_ARGS}
+      RTPP4_START_RC=${?}
+      if [ ${RTPP4_START_RC} -ne 0 ]
+      then
+        TMP_PIDFILE=${RTPP1_PID} TMP_LOGFILE="/dev/null" rtpproxy_stop TERM
+        TMP_PIDFILE=${RTPP2_PID} TMP_LOGFILE="/dev/null" rtpproxy_stop TERM
+        TMP_PIDFILE=${RTPP3_PID} TMP_LOGFILE="/dev/null" rtpproxy_stop TERM
+      fi
+      report_rc ${RTPP4_START_RC} "rtpproxy #${j}.4 start on ${_socket}"
+      RTPP4_PID="${TMP_PIDFILE}"
+      socket_idx=0
+      for i in 1 2 3 4
+      do
+        advance_sockidx
+        if [ ${i} -gt 2 ]
+        then
+          garg="6"
+        else
+          garg=""
+        fi
+        (geninput "${garg}" "RTPP${j}.${i}" | ${RTPP_QUERY} -b -s "${_socket}" -S "${TOP_BUILDDIR}/python/sippy_lite" -i - \
+          > session_timeouts.qout${j}.${i})&
+        eval RTPQ${i}_PID=${!}
+      done
+      for i in 1 2 3 4
+      do
+        eval "RTPQ_PID=\${RTPQ${i}_PID}"
+        wait ${RTPQ_PID}
+        RTPQ_WAIT_RC=${?}
+      done
+      for i in 1 2 3 4
+      do
+        eval "RTPP_PID=\${RTPP${i}_PID} RTPP_LOG=\${RTPP${i}_LOG}"
+        TMP_PIDFILE=${RTPP_PID} TMP_LOGFILE="${RTPP_LOG}" rtpproxy_stop HUP
+        eval RTPP${i}_STOP_RC=${?}
+      done
+      report_rc ${RTPQ_WAIT_RC} "wait for rtpp_query.py #${j}.${i} shutdown"
+      report_rc ${RTPP1_STOP_RC} "wait for rtpproxy #${j}.1 shutdown"
+      report_rc ${RTPP2_STOP_RC} "wait for rtpproxy #${j}.2 shutdown"
+      report_rc ${RTPP3_STOP_RC} "wait for rtpproxy #${j}.3 shutdown"
+      report_rc ${RTPP4_STOP_RC} "wait for rtpproxy #${j}.4 shutdown"
+      for i in 1 2 3 4
+      do
+        if [ ${i} -eq 1 -o ${i} -eq 2 ]
+        then
+          ofile=session_timeouts/ipv4_${i}.output
+        else
+          ofile=session_timeouts/ipv6_$((${i} - 2)).output
+        fi
+        cat session_timeouts.qout${j}.${i} session_timeouts.rout${j}.${i} > session_timeouts.fout${j}.${i}
+        ${DIFF} ${ofile} session_timeouts.fout${j}.${i}
+        report "checking rtpp_query.py #${j}.${i} stdout"
+      done
+    fi
+    j=$((${j} + 1))
+  done
+
+  notify_client_stop "${RTPP_NC_PID}"
+
+  sort session_timeouts.tlog > session_timeouts.tlog.sorted
+  sort session_timeouts/tnotify.output | ${DIFF} - session_timeouts.tlog.sorted
+  report "checking rtpp_notify_client.py on ${client_notify_sock} output"
+}

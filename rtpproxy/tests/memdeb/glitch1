@@ -1,0 +1,70 @@
+#!/bin/sh
+
+TDIR="`dirname "${0}"`"
+BASEDIR="${TDIR}/.."
+SUDO_REQUIRED=1
+. "${BASEDIR}/functions"
+
+. "${TDIR}/glitch.sub"
+
+__beforeexit_cleanup()
+{
+  if [ -f "${TMP_LOGFILE}" ]
+  then
+    rtpproxy_stop TERM
+  fi
+  kill ${NC_PID} 2>/dev/null
+}
+
+my_stop_nc()
+{
+  stop_nc
+  cat glitch1.ncout
+  test -s glitch1.ncout
+  report "checking CallHome data"
+}
+
+rtpp_glitch()
+{
+    export RTPP_GLITCH_TRIG="${1}"
+    export RTPP_GLITCH_ACT="${2}"
+    export RTPP_GLITCH_CH_PORT="${3}"
+    rtpproxy_start
+    reportifnotfail "glitch rtpproxy using ${1}, action ${2}"
+}
+
+disable_aslr
+
+rtpp_glitch "garbage" "r"
+rtpp_glitch "*" "garbage"
+
+spin_nc
+export RTPP_GLITCH_TRIG="*"
+export RTPP_GLITCH_ACT="r"
+export RTPP_GLITCH_CH_PORT="${NC_PORT}"
+rtpproxy_start
+report "surveying rtpproxy using *, action r"
+rtpproxy_stop TERM
+report "stopping rtpproxy"
+my_stop_nc
+
+NLN=`wc -l < glitch1.ncout`
+test ${NLN} -gt 45
+report "make sure CallHome has enough data"
+
+STRIG="`awk -F : '{print $1}' glitch1.ncout | tail -n 53 | head -n 1`"
+test -z "${STRIG}"
+reportifnotfail "Extracting glitch step at [-53]"
+SCOOK="`awk '{print $2}' glitch1.ncout | tail -n 65 | head -n 2`"
+test -z "${SCOOK}"
+reportifnotfail "Extracting stack cookie at [-65]"
+
+for trig in "s0" "${STRIG}" "${SCOOK}" "${SCOOK}:*" "*"
+do
+  spin_nc
+  for act in "a" "e" "rg"
+  do
+    rtpp_glitch "${trig}" "${act}" "${NC_PORT}"
+  done
+  my_stop_nc
+done

@@ -1,0 +1,14 @@
+MAINSRCDIR = $(top_srcdir)/src
+DEFAULT_INCLUDES = -I$(MAINSRCDIR)
+
+CC_WFLAGS = -Wall -Werror=implicit-function-declaration
+if ENABLE_WARN_IPT
+CC_WFLAGS += -Werror=incompatible-pointer-types
+endif
+if ENABLE_LTO
+LTO_FLAG = -flto
+endif
+
+OPT_CFLAGS = @OPT_CFLAGS@
+
+NOPT_CFLAGS = -g3 -O0

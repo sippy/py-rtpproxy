@@ -1,0 +1,10 @@
+#!/bin/sh
+
+BASEDIR="`dirname "${0}"`/.."
+. "${BASEDIR}/functions"
+
+for t in execinfo_check execinfo_TEST
+do
+  ${TOP_BUILDDIR}/libexecinfo/${t}
+  report "running ${t}"
+done
