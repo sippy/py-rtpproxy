@@ -1,0 +1,13 @@
+#!/bin/sh
+
+TDIR="`dirname "${0}"`"
+BASEDIR="${TDIR}/.."
+SUDO_REQUIRED=1
+. "${BASEDIR}/functions"
+
+. "${TDIR}/glitch.sub"
+
+disable_aslr
+
+glitch_test libucl/libucl1 0 libucl_test.output
+report "glitching libucl/libucl1"

@@ -1,0 +1,13 @@
+#!/bin/sh
+
+# test start up of rtpproxy and handling of SIGTERM and SIGHUP
+
+BASEDIR="`dirname "${0}"`/.."
+. "${BASEDIR}/functions"
+
+TS_LOGFILE="startstop.nodebug.rlog"
+
+. "${BASEDIR}/startstop/startstop.sub"
+
+test_startstop "startstop.nodebug.rout" "${RTPPROXY_PROD}" "libucl/libucl_test.nodebug.conf" \
+ "catch_dtmf dtls_gw ice_lite" "startstop.nodebug.output"

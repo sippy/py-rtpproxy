@@ -1,0 +1,10 @@
+#!/bin/sh
+
+BASEDIR="`dirname "${0}"`/.."
+. "${BASEDIR}/functions"
+
+for scr in rtpp_rzmalloc_perf rtpp_rzmalloc_perf_debug
+do
+  "${TOP_BUILDDIR}/src/${scr}"
+  report "Running ${scr}"
+done

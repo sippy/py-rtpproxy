@@ -1,0 +1,13 @@
+#!/bin/sh
+
+# test start up of rtpproxy and handling of SIGTERM and SIGHUP
+
+BASEDIR="`dirname "${0}"`/.."
+. "${BASEDIR}/functions"
+
+TS_LOGFILE="startstop.rlog"
+
+. "${BASEDIR}/startstop/startstop.sub"
+
+test_startstop "startstop.rout" "${RTPPROXY_DBG}" "libucl/libucl_test.conf" \
+ "catch_dtmf_debug dtls_gw_debug ice_lite_debug" "startstop.output"

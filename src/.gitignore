@@ -1,0 +1,14 @@
+*~
+*.orig
+*.rej
+*.o
+.deps
+config.h
+Makefile
+rtpproxy
+ktrace.out
+rtpproxy_debug
+rtpp_fintest
+rtpp_objck_perf
+rtpp_rzmalloc_perf
+rtpp_rzmalloc_perf_debug
