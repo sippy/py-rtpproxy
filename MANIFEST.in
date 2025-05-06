@@ -1,0 +1,3 @@
+recursive-include rtpproxy *
+recursive-include openssl *
+include python/build_rtpproxy.sh python/symbols.map
