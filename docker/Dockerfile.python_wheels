@@ -1,0 +1,63 @@
+# syntax=docker/dockerfile:1.7-labs
+
+ARG BASE_IMAGE="quay.io/pypa/manylinux_2_28:latest"
+ARG CCACHE_IMAGE="ghcr.io/sobomax/ccache:latest"
+ARG CACHE_IMAGE="scratch"
+
+FROM ${CCACHE_IMAGE} AS ccache
+FROM ${CACHE_IMAGE} AS buildcache
+
+FROM --platform=$TARGETPLATFORM $BASE_IMAGE AS build
+LABEL maintainer="Maksym Sobolyev <sobomax@sippysoft.com>"
+
+USER root
+
+WORKDIR /src
+
+ARG PY_VER
+ARG PYTHON_CMD
+
+ENV CACHE_HOME="/root"
+ENV CACHE_ROOT="${CACHE_HOME}/.cache"
+ENV TROOT="/tmp/build_cache_root"
+ENV PIPCACHE_DIR="${CACHE_ROOT}/pip"
+
+RUN mkdir -p ${PIPCACHE_DIR}
+RUN --mount=type=bind,from=buildcache,source=/,target=${TROOT} \
+ test ! -d ${TROOT}${PIPCACHE_DIR} || \
+  cp -a ${TROOT}${PIPCACHE_DIR} ${CACHE_ROOT}/
+
+ENV CCACHE_DIR="${CACHE_HOME}/.ccache"
+
+RUN mkdir -p ${CCACHE_DIR}
+RUN --mount=type=bind,from=buildcache,source=/,target=${TROOT} \
+ test ! -d ${TROOT}${CCACHE_DIR} || \
+  cp -a ${TROOT}${CCACHE_DIR} ${CACHE_HOME}/
+
+RUN --mount=type=bind,source=scripts/build,target=scripts/build \
+ sh -x scripts/build/install_depends_wheels.sh
+RUN dnf install -y perl perl-core
+
+COPY --exclude=.git --exclude=.github --exclude=docker --exclude=dist \
+ --exclude=scripts . .
+
+ENV CCACHE_BIN="/usr/bin/ccache"
+COPY --from=ccache ${CCACHE_BIN} ${CCACHE_BIN}
+ENV CC="${CCACHE_BIN} gcc" CXX="${CCACHE_BIN} g++"
+RUN ${PYTHON_CMD} -m build --wheel
+RUN auditwheel repair dist/*.whl --wheel-dir dist_out
+
+RUN ${CCACHE_BIN} --max-size=200M
+RUN ${CCACHE_BIN} --show-stats
+
+FROM build AS test
+RUN ${PYTHON_CMD} -m pip install dist_out/*.whl
+RUN ${PYTHON_CMD} -c "from rtp.io import rtpproxy"
+RUN date > dist_out/test_done.ts
+
+FROM scratch AS export
+COPY --from=build /src/dist_out /dist
+COPY --from=build /root/.cache/pip /root/.cache/pip
+COPY --from=test /src/dist_out/test_done.ts /dist
+ENV CCACHE_DIR="/root/.ccache"
+COPY --from=build ${CCACHE_DIR} ${CCACHE_DIR}
