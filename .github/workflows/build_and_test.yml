@@ -58,7 +58,7 @@ jobs:
       shell: bash
 
     - name: install
-      run: pip install dist/rtpproxy*.gz
+      run: CC=${COMPILER} pip install dist/rtpproxy*.gz
       shell: bash
 
     - name: test

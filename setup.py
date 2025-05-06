@@ -1,14 +1,24 @@
-from setuptools import setup, Extension
-from setuptools.command.build_ext import build_ext
+from contextlib import suppress
+from setuptools import setup, Extension, Command
+from setuptools.command.build import build
 import subprocess
 import os
 
-class CustomBuildExt(build_ext):
+class CustomCommand(Command):
+    def initialize_options(self) -> None:
+        self.bdist_dir = None
+
+    def finalize_options(self) -> None:
+        with suppress(Exception):
+            self.bdist_dir = self.get_finalized_command("bdist_wheel").bdist_dir
+
     def run(self):
-        # Run the external build script
-        subprocess.check_call(['sh', 'python/build_rtpproxy.sh'])
-        # Proceed with normal extension building
-        super().run()
+        if self.bdist_dir:
+            # Run the external build script
+            subprocess.check_call(['sh', 'python/build_rtpproxy.sh'])
+
+class CustomBuild(build):
+    sub_commands = [('build_custom', None)] + build.sub_commands
 
 def main():
     link_args = []
@@ -35,7 +45,8 @@ def main():
         description='Module to run RTPProxy inside Python.',
         ext_modules=ext_modules,
         cmdclass={
-            'build_ext': CustomBuildExt,
+            'build': CustomBuild,
+            'build_custom': CustomCommand,
         },
         classifiers=[
             'Programming Language :: Python :: 3',
