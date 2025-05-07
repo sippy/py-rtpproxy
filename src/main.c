@@ -887,6 +887,9 @@ rtpp_shutdown(struct rtpp_cfg *cfsp)
     free(cfsp->ctrl_socks);
     cfsp->ctrl_socks = NULL;
     rtpp_gen_uid_free();
+#if defined(LIBRTPPROXY)
+    rtpp_glog_fin();
+#endif
 }
 
 #ifdef LIBRTPPROXY
@@ -992,7 +995,9 @@ rtpp_main(int argc, const char * const *argv)
  #endif
 
     _sig_cf = &cfs;
+#if !defined(LIBRTPPROXY)
     atexit(rtpp_glog_fin);
+#endif
 
     int r = init_config(&cfs, argc, argv);
     if (r < 0) {
@@ -1059,7 +1064,9 @@ rtpp_main(int argc, const char * const *argv)
         MAIN_ERR(1, "rtpproxy has failed to initialize logging facilities");
     }
 
+#if !defined(LIBRTPPROXY)
     atexit(ehandler);
+#endif
     RTPP_LOG(cfs.glog, RTPP_LOG_INFO, "rtpproxy started, pid %d", getpid());
 
     if (cfs.sched_policy != SCHED_OTHER) {
