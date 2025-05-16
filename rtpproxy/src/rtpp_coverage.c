@@ -25,27 +25,23 @@
  *
  */
 
-#include <stdlib.h>
+#include "unistd.h"
 
-#include "config_pp.h"
+#include "rtpp_coverage.h"
 
-#include "rtpp_module.h"
-#include "rtpp_module_acct.h"
+extern void __gcov_flush(void) __attribute__((weak));
 
-#ifdef RTPP_CHECK_LEAKS
-#include "rtpp_memdeb_internal.h"
+/* check in gcc sources gcc/gcov-io.h for the prototype */
+void
+rtpp_gcov_flush(void)
+{
+    if (__gcov_flush == NULL)
+        return;
+    __gcov_flush();
+}
 
-RTPP_MEMDEB_APP_STATIC;
-#endif
-
-static const struct rtpp_acct_handlers badmod4_aapi = {
-    .on_rtcp_rcvd = AAPI_FUNC(NULL + 1, 0)
-};
-const struct rtpp_minfo RTPP_MOD_SELF = {
-    .descr.name = "badmod4",
-    .descr.ver = MI_VER_INIT(),
-#ifdef RTPP_CHECK_LEAKS
-    .memdeb_p = &MEMDEB_SYM,
-#endif
-    .aapi = &badmod4_aapi
-};
+int
+is_gcov_on(void)
+{
+    return (__gcov_flush != NULL);
+}

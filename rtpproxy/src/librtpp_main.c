@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020 Sippy Software, Inc., http://www.sippysoft.com
+ * Copyright (c) 2006-2025 Sippy Software, Inc., http://www.sippysoft.com
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -25,27 +25,42 @@
  *
  */
 
-#include <stdlib.h>
+#include <unistd.h>
 
-#include "config_pp.h"
+#include "librtpproxy.h"
+#include "librtpp_main.h"
 
-#include "rtpp_module.h"
-#include "rtpp_module_acct.h"
+struct opt_save {
+    char *optarg;
+    int optind;
+    int optopt;
+    int opterr;
+    int optreset;
+};
 
-#ifdef RTPP_CHECK_LEAKS
-#include "rtpp_memdeb_internal.h"
-
-RTPP_MEMDEB_APP_STATIC;
+#if defined(__linux__)
+static int optreset; /* Not present in linux */
 #endif
 
-static const struct rtpp_acct_handlers badmod4_aapi = {
-    .on_rtcp_rcvd = AAPI_FUNC(NULL + 1, 0)
-};
-const struct rtpp_minfo RTPP_MOD_SELF = {
-    .descr.name = "badmod4",
-    .descr.ver = MI_VER_INIT(),
-#ifdef RTPP_CHECK_LEAKS
-    .memdeb_p = &MEMDEB_SYM,
-#endif
-    .aapi = &badmod4_aapi
-};
+#define OPT_SAVE(sp) (*(sp) = (struct opt_save){optarg, optind, optopt, opterr, optreset})
+#define OPT_RESTORE(sp) ({ \
+    optarg = (sp)->optarg; \
+    optind = (sp)->optind; \
+    optopt = (sp)->optopt; \
+    opterr = (sp)->opterr; \
+    optreset = (sp)->optreset; \
+})
+
+struct rtpp_cfg *
+rtpp_main(int argc, const char * const *argv)
+{
+    struct rtpp_cfg *r;
+    const struct opt_save opt_zero = {.optind = 1};
+    struct opt_save opt_saved;
+
+    OPT_SAVE(&opt_saved);
+    OPT_RESTORE(&opt_zero);
+    r = _rtpp_main(argc, argv);
+    OPT_RESTORE(&opt_saved);
+    return r;
+}

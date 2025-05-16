@@ -13,24 +13,26 @@ BUILDDIR="${BUILDDIR:-${BASEDIR}}"
 TOP_BUILDDIR="${TOP_BUILDDIR:-${BASEDIR}/..}"
 
 PYTHON_DIR="${TOP_BUILDDIR}/python"
-SIPPY_DIR="${PYTHON_DIR}/sippy_lite"
 RPTL_DIR="${PYTHON_DIR}/RPTL"
 RECORD_DIR="${BUILDDIR}"
 RECORD_SPL_DIR="${BUILDDIR}/.spool"
 
 PYINT=${PYINT:-"python3"}
+RTPP_POST_START_SLEEP="${RTPP_POST_START_SLEEP:-"0.1"}"
+RTPP_POST_STOP_SLEEP="${RTPP_POST_STOP_SLEEP:-"0.2"}"
 
 RTPPROXY_DBG="${TOP_BUILDDIR}/src/rtpproxy_debug"
 RTPPROXY_PROD="${TOP_BUILDDIR}/src/rtpproxy"
 RTPPROXY="${RTPPROXY:-${RTPPROXY_DBG}}"
-RTPP_QUERY="${PYINT} ${SIPPY_DIR}/sippy/tools/rtpp_query.py -n 1 -S ${SIPPY_DIR}"
-RTPP_NOTYFY_CLIENT="${PYINT} ${PYTHON_DIR}/rtpp_notify_client.py -S ${SIPPY_DIR}"
-RPTL_INT="${PYINT} ${RPTL_DIR}/rptl_run.py -S ${SIPPY_DIR}"
+RTPP_QUERY="${PYINT} ${PYTHON_DIR}/tools/rtpp_query.py -n 1"
+RTPP_NOTYFY_CLIENT="${PYINT} ${PYTHON_DIR}/tools/rtpp_notify_client.py"
+RPTL_INT="${PYINT} ${RPTL_DIR}/rptl_run.py"
 MAKEANN_DBG=${TOP_BUILDDIR}/makeann/makeann_debug
 MAKEANN_PROD=${TOP_BUILDDIR}/makeann/makeann
 MAKEANN="${MAKEANN:-${MAKEANN_PROD}}"
 EXTRACTAUDIO=${TOP_BUILDDIR}/extractaudio/extractaudio_debug
 REVTEMPL="${PYINT} ${TOP_BUILDDIR}/scripts/revtempl.py"
+KILL_CMD="`which kill`"
 
 setup_tstart() {
   RTPP_MCLOCK_NAME="`RTPP_GLITCH_ACT="" ${RTPPROXY} -C 2>/dev/null`"
@@ -39,7 +41,7 @@ setup_tstart() {
     echo "oops, cannot determine clock name to synchronize logs!" 1>&2
     exit 1
   fi
-  RTPP_LOG_TSTART="`${PYINT} ${SIPPY_DIR}/sippy/tools/getmonotime.py -S ${SIPPY_DIR} \
+  RTPP_LOG_TSTART="`${PYINT} ${PYTHON_DIR}/tools/getmonotime.py \
    -C ${RTPP_MCLOCK_NAME}`"
   export RTPP_LOG_TSTART
   RTPP_LOG_TFORM="rel"
@@ -214,10 +216,10 @@ rtpproxy_start() {
   RTPP_RUNDIR=`pwd`
   if [ ! -z "${RTPP_OUTFILE}" ]
   then
-    ${RTPPROXY} -D -F -s ${TMP_SOCKFILE} -p ${TMP_PIDFILE} -d info "${@}" \
+    ${RTPPROXY} --no_redirect -D -F -s ${TMP_SOCKFILE} -p ${TMP_PIDFILE} -d dbug "${@}" \
      >${RTPP_OUTFILE} 2>${TMP_LOGFILE}
   else
-    ${RTPPROXY} -D -F -s ${TMP_SOCKFILE} -p ${TMP_PIDFILE} -d info "${@}" \
+    ${RTPPROXY} --no_redirect -D -F -s ${TMP_SOCKFILE} -p ${TMP_PIDFILE} -d dbug "${@}" \
      2>${TMP_LOGFILE}
   fi
   RC=${?}
@@ -228,7 +230,11 @@ rtpproxy_start() {
       cat ${TMP_LOGFILE} >&2
     fi
     return 1
-  fi  
+  fi
+  if [ ! -z "${RTPP_POST_START_SLEEP}" ]
+  then
+     sleep ${RTPP_POST_START_SLEEP}
+  fi
   export TMP_PIDFILE
   export TMP_SOCKFILE
   _i=0
@@ -245,17 +251,25 @@ rtpproxy_start() {
   return 0
 }
 
-rtpproxy_stop() {
-  SIGNAME="${1}"
-  if ! kill -${SIGNAME} `cat ${TMP_PIDFILE}`
-  then
+check_core() {
     if [ -e ${RTPP_RUNDIR}/core ]
     then
       gdb --command=${BUILDDIR}/gdb.gettrace ${RTPPROXY} ${RTPP_RUNDIR}/core >&2 && rm ${RTPP_RUNDIR}/core
     fi
+}
+
+rtpproxy_stop() {
+  SIGNAME="${1}"
+  if ! ${KILL_CMD} -${SIGNAME} `cat ${TMP_PIDFILE}`
+  then
+    check_core
     cat ${TMP_LOGFILE} >&2
     false
     return
+  fi
+  if [ ! -z "${RTPP_POST_STOP_SLEEP}" ]
+  then
+     sleep ${RTPP_POST_STOP_SLEEP}
   fi
   _i=0
   while [ -e ${TMP_PIDFILE} ]
@@ -264,11 +278,11 @@ rtpproxy_stop() {
     _i=$((${_i} + 1))
     if [ ${_i} -eq 3 ]
     then
-      kill -KILL `cat ${TMP_PIDFILE}`
+      ${KILL_CMD} -KILL `cat ${TMP_PIDFILE}`
+      check_core
       if [ "${TMP_LOGFILE}" != "/dev/null" ]
       then
         cat "${TMP_LOGFILE}" >&2
-        rm "${TMP_LOGFILE}"
       fi
       false
       return
@@ -305,12 +319,12 @@ witness_start() {
 
 notify_client_stop() {
   local NC_PID="${1}"
-  kill ${NC_PID} 2>/dev/null
+  ${KILL_CMD} ${NC_PID} 2>/dev/null
   report "asking NOTYFY_CLIENT[${NC_PID}] to exit"
   not_exited=1
   for i in 1 2 3
   do
-    if kill -TERM ${NC_PID} 2>/dev/null
+    if ${KILL_CMD} -TERM ${NC_PID} 2>/dev/null
     then
       sleep 1
       continue
@@ -324,7 +338,7 @@ notify_client_stop() {
 witness_stop() {
   if [ "${WITNESS_PID}" != "" ]
   then
-    ${SUDO} kill -TERM ${WITNESS_PID} 2>/dev/null
+    ${SUDO} ${KILL_CMD} -TERM ${WITNESS_PID} 2>/dev/null
     if [ "${WITNESS_ADD_FILES}" != "" ]
     then
       WITNESS_NAME="${TESTNAME}.${TEST_TIMESTAMP}.debug.tbz2"
