@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020 Sippy Software, Inc., http://www.sippysoft.com
+ * Copyright (c) 2006-2025 Sippy Software, Inc., http://www.sippysoft.com
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -25,27 +25,6 @@
  *
  */
 
-#include <stdlib.h>
+#pragma once
 
-#include "config_pp.h"
-
-#include "rtpp_module.h"
-#include "rtpp_module_acct.h"
-
-#ifdef RTPP_CHECK_LEAKS
-#include "rtpp_memdeb_internal.h"
-
-RTPP_MEMDEB_APP_STATIC;
-#endif
-
-static const struct rtpp_acct_handlers badmod4_aapi = {
-    .on_rtcp_rcvd = AAPI_FUNC(NULL + 1, 0)
-};
-const struct rtpp_minfo RTPP_MOD_SELF = {
-    .descr.name = "badmod4",
-    .descr.ver = MI_VER_INIT(),
-#ifdef RTPP_CHECK_LEAKS
-    .memdeb_p = &MEMDEB_SYM,
-#endif
-    .aapi = &badmod4_aapi
-};
+extern struct rtpp_cfg *_rtpp_main(int argc, const char * const *argv);

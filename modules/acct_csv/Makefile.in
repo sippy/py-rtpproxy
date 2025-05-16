@@ -285,6 +285,9 @@ LIBS_SNDFILE = @LIBS_SNDFILE@
 LIBS_SRTP = @LIBS_SRTP@
 LIBS_UNWIND = @LIBS_UNWIND@
 LIBTOOL = @LIBTOOL@
+LIB_CRYPTO = @LIB_CRYPTO@
+LIB_SRTP2 = @LIB_SRTP2@
+LIB_SSL = @LIB_SSL@
 LIPO = @LIPO@
 LN_S = @LN_S@
 LTLIBOBJS = @LTLIBOBJS@
@@ -385,7 +388,8 @@ RTPP_MEMDEB_CORESRCS = $(MAINSRCDIR)/rtpp_memdeb.c $(MAINSRCDIR)/rtpp_memdeb.h \
   $(MAINSRCDIR)/rtpp_refcnt.h $(MAINSRCDIR)/rtpp_threads.h \
   $(MAINSRCDIR)/rtpp_threads.c \
   $(MAINSRCDIR)/rtpp_mallocs.c $(MAINSRCDIR)/rtpp_mallocs.h \
-  $(MAINSRCDIR)/rtpp_stacktrace.c $(MAINSRCDIR)/rtpp_stacktrace.h
+  $(MAINSRCDIR)/rtpp_stacktrace.c $(MAINSRCDIR)/rtpp_stacktrace.h \
+  $(MAINSRCDIR)/rtpp_coverage.c $(MAINSRCDIR)/rtpp_coverage.h
 
 @ENABLE_LIBUNWIND_FALSE@RTPP_MEMDEB_CFLAGS = -fno-omit-frame-pointer
 RTPP_MEMDEB_LDADD = $(top_srcdir)/libexecinfo/libexecinfo.la @LIBS_DL@ -lpthread

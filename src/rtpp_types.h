@@ -152,6 +152,7 @@ extern const struct rtpc_reply_smethods * const rtpc_reply_smethods;
 #endif
 
 #define PVT_RCOFFS(pvtp) (offsetof(typeof(*(pvtp)), pub) + offsetof(typeof((pvtp)->pub), rcnt))
+#define PUB_RCOFFS(pub) offsetof(typeof(*(pub)), rcnt)
 
 #define PUB2PVT(pubp, pvtp) \
   (pvtp) = (typeof(pvtp))((char *)(pubp) - offsetof(typeof(*(pvtp)), pub))
@@ -160,6 +161,10 @@ extern const struct rtpc_reply_smethods * const rtpc_reply_smethods;
 
 #define RTPP_OBJ_INCREF(obj) RC_INCREF((obj)->rcnt)
 #define RTPP_OBJ_DECREF(obj) RC_DECREF((obj)->rcnt)
+#define RTPP_OBJ_DTOR_ATTACH(obj, f, p) CALL_SMETHOD((obj)->rcnt, attach, \
+  (rtpp_refcnt_dtor_t)(f), (p))
+#define RTPP_OBJ_DTOR_ATTACH_RC(obj, rc) CALL_SMETHOD((obj)->rcnt, attach_rc, \
+  (rc))
 
 #define DEFINE_CB_STRUCT(functype) \
     typedef struct { \
