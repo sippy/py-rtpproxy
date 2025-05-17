@@ -20,6 +20,10 @@ else
 fi
 
 CFLAGS="-O0 -g3 -pipe -flto"
+if [ ! -z "${ARCH_CFLAGS}" ]
+then
+  CFLAGS="${CFLAGS} ${ARCH_CFLAGS}"
+fi
 LDFLAGS="-O0 -g3 -flto"
 
 if [ -z "${NO_BUILD_OSSL}" ]
