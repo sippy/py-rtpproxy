@@ -20,13 +20,18 @@ else
 fi
 
 CFLAGS="-O0 -g3 -pipe -flto"
+if [ ! -z "${ARCH_CFLAGS}" ]
+then
+  CFLAGS="${CFLAGS} ${ARCH_CFLAGS}"
+fi
 LDFLAGS="-O0 -g3 -flto"
 
 if [ -z "${NO_BUILD_OSSL}" ]
 then
   cd ${MYDIR}/../openssl
   CFLAGS="${CFLAGS}" LDFLAGS="${LDFLAGS}" ./Configure no-shared no-module no-dso \
-   no-tests no-apps no-unit-test no-quic no-docs --prefix="${BDIR}" --libdir=lib
+   no-tests no-apps no-unit-test no-quic no-docs --prefix="${BDIR}" --libdir=lib \
+   ${OPENSSL_CONFIGURE_ARGS}
   make all
   make install_sw
 fi
