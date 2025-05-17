@@ -30,7 +30,8 @@ if [ -z "${NO_BUILD_OSSL}" ]
 then
   cd ${MYDIR}/../openssl
   CFLAGS="${CFLAGS}" LDFLAGS="${LDFLAGS}" ./Configure no-shared no-module no-dso \
-   no-tests no-apps no-unit-test no-quic no-docs --prefix="${BDIR}" --libdir=lib
+   no-tests no-apps no-unit-test no-quic no-docs --prefix="${BDIR}" --libdir=lib \
+   ${OPENSSL_CONFIGURE_ARGS}
   make all
   make install_sw
 fi
