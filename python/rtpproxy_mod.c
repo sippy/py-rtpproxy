@@ -211,6 +211,7 @@ static int PyRTPProxy_init(PyRTPProxyObject* self, PyObject* args, PyObject* kwd
         if (py2c_list(modules_obj, self->_modules, MAX_MODULES, "modules") != 0) {
             goto e0;
         }
+        self->rp.modules = self->_modules;
     }
     if (extra_args_obj) {
         if (py2c_list(extra_args_obj, self->_extra_args, MAX_EXTRA_ARGS, "extra_args") != 0) {
