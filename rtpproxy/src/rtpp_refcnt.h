@@ -29,6 +29,8 @@
 
 struct rtpp_codeptr;
 
+#define MAX_DTORS 24
+
 typedef void (*rtpp_refcnt_dtor_t)(void *);
 
 DECLARE_CLASS(rtpp_refcnt, void *, rtpp_refcnt_dtor_t);
