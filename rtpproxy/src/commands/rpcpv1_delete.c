@@ -28,6 +28,7 @@
 
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -55,16 +56,21 @@
 #include "rtpp_codeptr.h"
 #include "rtpp_stream.h"
 #include "rtpp_weakref.h"
+#include "rtpp_refcnt.h"
 
 struct delete_ematch_arg {
-    int ndeleted;
     const rtpp_str_t *from_tag;
     const rtpp_str_t *to_tag;
     int weak;
     struct rtpp_weakref *sessions_wrt;
+    /* Return value */
+    struct {
+        int ndeleted;
+        struct rtpp_session *spa;
+        int cmpr;
+        unsigned int medianum;
+    } res;
 };
-
-static void rtpp_command_del_opts_free(struct delete_opts *);
 
 static int
 rtpp_cmd_delete_ematch(void *dp, void *ap)
@@ -106,41 +112,55 @@ rtpp_cmd_delete_ematch(void *dp, void *ap)
           dep->weak ? ( idx ? "weak[1]" : "weak[0]" ) : "strong",
           spa->strong, spa->rtp->stream[0]->weak, spa->rtp->stream[1]->weak);
         /* Skipping to next possible stream for this call */
-        dep->ndeleted++;
+        dep->res.ndeleted++;
         return (RTPP_HT_MATCH_CONT);
     }
-    RTPP_LOG(spa->log, RTPP_LOG_INFO,
-      "forcefully deleting session %u on ports %d/%d",
-       medianum, spa->rtp->stream[0]->port, spa->rtp->stream[1]->port);
-    if (CALL_SMETHOD(dep->sessions_wrt, unreg, spa->seuid) != NULL) {
-        dep->ndeleted++;
-    }
-    if (cmpr != 2) {
-        return (RTPP_HT_MATCH_DEL | RTPP_HT_MATCH_BRK);
-    }
-    return (RTPP_HT_MATCH_DEL);
+    RTPP_OBJ_INCREF(spa);
+    dep->res.spa = spa;
+    dep->res.cmpr = cmpr;
+    dep->res.medianum = medianum;
+    return (RTPP_HT_MATCH_DEL | RTPP_HT_MATCH_BRK);
 }
 
-struct delete_opts {
+struct delete_opts_priv {
+    struct delete_opts pub;
     int weak;
 };
+
+static int
+do_delete(const struct rtpp_cfg *cfsp, const rtpp_str_t *call_id, struct delete_ematch_arg *dep)
+{
+    do {
+        CALL_SMETHOD(cfsp->sessions_ht, foreach_key_str, call_id, rtpp_cmd_delete_ematch, dep);
+        if (dep->res.spa == NULL)
+            break;
+        RTPP_LOG(dep->res.spa->log, RTPP_LOG_INFO,
+          "forcefully deleting session %u on ports %d/%d", dep->res.medianum,
+          dep->res.spa->rtp->stream[0]->port, dep->res.spa->rtp->stream[1]->port);
+        if (CALL_SMETHOD(dep->sessions_wrt, unreg, dep->res.spa->seuid) != NULL) {
+            dep->res.ndeleted++;
+        }
+        RTPP_OBJ_DECREF(dep->res.spa);
+        dep->res.spa = NULL;
+    } while (dep->res.cmpr == 2);
+
+    return (dep->res.ndeleted == 0) ? -1 : 0;
+}
 
 int
 handle_delete(const struct rtpp_cfg *cfsp, struct common_cmd_args *ccap)
 {
-
+    struct delete_opts_priv *dop;
+    PUB2PVT(ccap->opts.delete, dop);
     struct delete_ematch_arg dea = {
         .from_tag = ccap->from_tag,
         .to_tag = ccap->to_tag,
-        .weak = ccap->opts.delete->weak,
-        .sessions_wrt = cfsp->sessions_wrt
+        .weak = dop->weak,
+        .sessions_wrt = cfsp->sessions_wrt,
     };
 
-    CALL_SMETHOD(cfsp->sessions_ht, foreach_key_str, ccap->call_id,
-      rtpp_cmd_delete_ematch, &dea);
-    rtpp_command_del_opts_free(ccap->opts.delete);
-    ccap->opts.delete = NULL;
-    return (dea.ndeleted == 0) ? -1 : 0;
+    int res = do_delete(cfsp, ccap->call_id, &dea);
+    return res;
 }
 
 int
@@ -148,28 +168,27 @@ handle_delete_as_subc(const struct after_success_h_args *ap,
   const struct rtpp_subc_ctx *scp)
 {
     const struct rtpp_cfg *cfsp = ap->stat;
-    struct delete_opts *dop = ap->dyn;
+    struct delete_opts_priv *dop;
+    PUB2PVT((struct delete_opts *)ap->dyn, dop);
     struct delete_ematch_arg dea = {
         .from_tag = scp->sessp->from_tag,
         .weak = dop->weak,
         .sessions_wrt = cfsp->sessions_wrt
     };
 
-    CALL_SMETHOD(cfsp->sessions_ht, foreach_key_str, scp->sessp->call_id,
-      rtpp_cmd_delete_ematch, &dea);
-    return (dea.ndeleted == 0) ? -1 : 0;
+    return do_delete(cfsp, scp->sessp->call_id, &dea);
 }
 
 struct delete_opts *
 rtpp_command_del_opts_parse(struct rtpp_command *cmd, const struct rtpp_command_args *ap)
 {
-    struct delete_opts *dlop;
+    struct delete_opts_priv *dlop;
     const char *cp;
 
-    dlop = rtpp_zmalloc(sizeof(struct delete_opts));
+    dlop = rtpp_rzmalloc(sizeof(struct delete_opts_priv), PVT_RCOFFS(dlop));
     if (dlop == NULL) {
         if (cmd != NULL)
-            CALL_SMETHOD(cmd->reply, error, ECODE_NOMEM_1);
+            CALL_SMETHOD(cmd->reply, deliver_error, ECODE_NOMEM_1);
         goto err_undo_0;
     }
     for (cp = ap->v[0].s + 1; *cp != '\0'; cp++) {
@@ -183,22 +202,16 @@ rtpp_command_del_opts_parse(struct rtpp_command *cmd, const struct rtpp_command_
             if (cmd != NULL) {
                 RTPP_LOG(cmd->glog, RTPP_LOG_ERR,
                   "DELETE: unknown command modifier `%c'", *cp);
-                CALL_SMETHOD(cmd->reply, error, ECODE_PARSE_4);
+                CALL_SMETHOD(cmd->reply, deliver_error, ECODE_PARSE_4);
             }
             goto err_undo_1;
         }
     }
-    return (dlop);
+    return (&dlop->pub);
 
 err_undo_1:
-    rtpp_command_del_opts_free(dlop);
+    RTPP_OBJ_DECREF(&dlop->pub);
 err_undo_0:
     return (NULL);
 }
 
-static void
-rtpp_command_del_opts_free(struct delete_opts *dlop)
-{
-
-    free(dlop);
-}
