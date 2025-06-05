@@ -151,7 +151,7 @@ controlfd_init_udp(const struct rtpp_cfg *cfsp, struct rtpp_ctrl_sock *csp)
     csp->port_ctl = atoi(cp);
     i = (csp->type == RTPC_UDP6) ? AF_INET6 : AF_INET;
     ifsin = sstosa(&csp->bindaddr);
-    r = setbindhost(ifsin, i, csp->cmd_sock, cp);
+    r = setbindhost(ifsin, i, csp->cmd_sock, cp, cfsp->no_resolve);
     if (tcp != NULL)
         *tcp = ':';
     if (r != 0) {
@@ -193,7 +193,7 @@ controlfd_init_tcp(const struct rtpp_cfg *cfsp, struct rtpp_ctrl_sock *csp)
     csp->port_ctl = atoi(cp);
     i = (csp->type == RTPC_TCP6) ? AF_INET6 : AF_INET;
     ifsin = sstosa(&csp->bindaddr);
-    r = setbindhost(ifsin, i, csp->cmd_sock, cp);
+    r = setbindhost(ifsin, i, csp->cmd_sock, cp, cfsp->no_resolve);
     if (tcp != NULL)
         *tcp = ':';
     if (r != 0) {
@@ -352,9 +352,11 @@ rtpp_ctrl_sock_parse(const char *optarg)
         rcsp->type= RTPC_STDIO;
         rcsp->exit_on_close = 1;
         optarg += 7;
+#if defined(LIBRTPPROXY)
     } else if (strncmp("fd:", optarg, 3) == 0) {
         rcsp->type= RTPC_FD;
         optarg += 3;
+#endif
     } else if (strncmp("tcp:", optarg, 4) == 0) {
         rcsp->type= RTPC_TCP4;
         optarg += 4;

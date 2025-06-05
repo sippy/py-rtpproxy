@@ -113,6 +113,8 @@
 #include "rtpp_locking.h"
 #include "rtpp_nofile.h"
 #include "advanced/pproc_manager.h"
+#include "ucl.h"
+#include "rtpp_ucl.h"
 #ifdef RTPP_CHECK_LEAKS
 #include "libexecinfo/stacktraverse.h"
 #include "libexecinfo/execinfo.h"
@@ -121,6 +123,7 @@
 #include "rtpp_stacktrace.h"
 #if defined(LIBRTPPROXY)
 #include "librtpproxy.h"
+#include "librtpp_main.h"
 #include "rtpp_module_if_static.h"
 #endif
 
@@ -168,6 +171,7 @@ rtpp_exit(int memdeb, int rval)
     exit(rval == 0 ? ecode : rval);
 }
 
+#if !defined(LIBRTPPROXY)
 static void
 rtpp_glog_fin(void)
 {
@@ -179,6 +183,24 @@ rtpp_glog_fin(void)
     fclose(stdout);
 #endif
 #endif
+    rtpp_sys_free(_sig_cf);
+}
+#endif
+
+static void
+badsignal(int sig)
+{
+    static volatile sig_atomic_t in_handler = 0;
+
+    signal(sig, SIG_DFL);
+    if (!in_handler) {
+        in_handler = 1;
+
+        RTPP_LOG(_sig_cf->glog, RTPP_LOG_CRIT, "got BAD signal %d, fastshutdown = %d",
+          sig, _sig_cf->fastshutdown);
+    }
+    raise(sig);
+    _exit(128 + sig);
 }
 
 static void
@@ -192,9 +214,10 @@ fatsignal(int sig)
     }
     /*
      * Got second signal while already in the fastshutdown mode, something
-     * probably jammed, do quick exit right from sighandler.
+     * probably jammed, do quick exit right from sighandler, with an error
+     * code.
      */
-    rtpp_exit(1, 0);
+    rtpp_exit(1, 128 + sig);
 }
 
 static void
@@ -208,6 +231,7 @@ sighup(int sig)
     _sig_cf->slowshutdown = 1;
 }
 
+#if !defined(LIBRTPPROXY)
 static void
 ehandler(void)
 {
@@ -220,6 +244,7 @@ ehandler(void)
     unlink(_sig_cf->pid_file);
     RTPP_LOG(_sig_cf->glog, RTPP_LOG_INFO, "rtpproxy ended");
 }
+#endif
 
 #define LOPT_DSO      256
 #define LOPT_BRSYM    257
@@ -227,6 +252,8 @@ ehandler(void)
 #define LOPT_OVL_PROT 259
 #define LOPT_CONFIG   260
 #define LOPT_FORC_ASM 261
+#define LOPT_NO_RESOL 262
+#define LOPT_NO_REDIR 263
 
 const static struct option longopts[] = {
     { "dso", required_argument, NULL, LOPT_DSO },
@@ -235,13 +262,15 @@ const static struct option longopts[] = {
     { "overload_prot", optional_argument, NULL, LOPT_OVL_PROT },
     { "config", required_argument, NULL, LOPT_CONFIG },
     { "force_asymmetric", no_argument, NULL, LOPT_FORC_ASM },
+    { "no_resolve", no_argument, NULL, LOPT_NO_RESOL },
+    { "no_redirect", no_argument, NULL, LOPT_NO_REDIR },
     { NULL,  0,                 NULL, 0 }
 };
 
 #ifdef LIBRTPPROXY
 #define IC_BAIL(c, r, m, mdb) do {  \
     init_config_bail(c, r, m, mdb); \
-    return (-r);                    \
+    return (-1);                    \
 } while (0)
 #define IC_ERR(code, fmt, ...) do { \
     warn(fmt, ##__VA_ARGS__);       \
@@ -259,7 +288,7 @@ const static struct option longopts[] = {
     err(code, fmt, ##__VA_ARGS__);  \
 } while (0)
 #define IC_ERRX(code, fmt, ...) do {\
-    err(code, fmt, ##__VA_ARGS__);  \
+    errx(code, fmt, ##__VA_ARGS__); \
 } while (0)
 #endif
 
@@ -293,6 +322,8 @@ init_config_bail(struct rtpp_cfg *cfsp, int rval, const char *msg, int memdeb)
     rtpp_gen_uid_free();
 #if !defined(LIBRTPPROXY)
     rtpp_exit(memdeb, rval);
+#else
+    rtpp_sys_free(cfsp);
 #endif
 }
 
@@ -339,6 +370,9 @@ init_config(struct rtpp_cfg *cfsp, int argc, const char * const *argv)
     cfsp->target_pfreq = MIN(POLL_RATE, cfsp->sched_hz);
     cfsp->slowshutdown = 0;
     cfsp->fastshutdown = 0;
+#if defined(RTPP_DEBUG)
+    cfsp->no_redirect = 1;
+#endif
 
     cfsp->rtpp_tnset_cf = rtpp_tnotify_set_ctor();
     if (cfsp->rtpp_tnset_cf == NULL) {
@@ -379,7 +413,7 @@ init_config(struct rtpp_cfg *cfsp, int argc, const char * const *argv)
             if (rtpp_static_modules_lookup(optarg) != NULL) {
                 cp = optarg;
             } else {
-                IC_ERR(1, "%s: static module is not compiled in", optarg);
+                IC_ERRX(1, "%s: static module is not compiled in", optarg);
             }
 #endif
             if (cp == NULL)
@@ -398,6 +432,7 @@ init_config(struct rtpp_cfg *cfsp, int argc, const char * const *argv)
                 IC_ERRX(1, "%p->get_mconf() method has failed: %s", mif, cp);
             }
             if (mcp != NULL) {
+                 RTPP_OBJ_DECREF(mcp);
                  IC_ERRX(1, "%s: dymanic module requires configuration, cannot be "
                    "loaded via --dso option", cp);
             }
@@ -435,6 +470,14 @@ init_config(struct rtpp_cfg *cfsp, int argc, const char * const *argv)
 
         case LOPT_FORC_ASM:
             cfsp->aforce = 1;
+            break;
+
+        case LOPT_NO_RESOL:
+            cfsp->no_resolve = 1;
+            break;
+
+        case LOPT_NO_REDIR:
+            cfsp->no_redirect = 1;
             break;
 
         case 'c':
@@ -801,19 +844,20 @@ init_config(struct rtpp_cfg *cfsp, int argc, const char * const *argv)
 
     for (i = 0; i < 2; i++) {
 	int rmode = AI_ADDRCONFIG | AI_PASSIVE;
+	rmode |= cfsp->no_resolve ? AI_NUMERICHOST : 0;
 	cfsp->bindaddr[i] = NULL;
 	if (bh[i] != NULL) {
 	    cfsp->bindaddr[i] = CALL_METHOD(cfsp->bindaddrs_cf,
               host2, bh[i], AF_INET, rmode, &errmsg);
 	    if (cfsp->bindaddr[i] == NULL)
-		IC_ERRX(1, "host2bindaddr: %s", errmsg);
+		IC_ERRX(1, "host2bindaddr(%s): %s", bh[i], errmsg);
 	    continue;
 	}
 	if (bh6[i] != NULL) {
 	    cfsp->bindaddr[i] = CALL_METHOD(cfsp->bindaddrs_cf,
               host2, bh6[i], AF_INET6, rmode, &errmsg);
 	    if (cfsp->bindaddr[i] == NULL)
-		IC_ERRX(1, "host2bindaddr: %s", errmsg);
+		IC_ERRX(1, "host2bindaddr(%s): %s", bh6[i], errmsg);
 	    continue;
 	}
     }
@@ -867,7 +911,7 @@ rtpp_shutdown(struct rtpp_cfg *cfsp)
     RTPP_OBJ_DECREF(cfsp->rtpp_timed_cf);
     CALL_METHOD(cfsp->rtpp_proc_ttl_cf, dtor);
     RTPP_OBJ_DECREF(cfsp->proc_servers);
-    CALL_METHOD(cfsp->rtpp_proc_cf, dtor);
+    RTPP_OBJ_DECREF(cfsp->rtpp_proc_cf);
     RTPP_OBJ_DECREF(cfsp->sessinfo);
     RTPP_OBJ_DECREF(cfsp->rtpp_stats);
     for (int i = 0; i <= RTPP_PT_MAX; i++) {
@@ -888,7 +932,7 @@ rtpp_shutdown(struct rtpp_cfg *cfsp)
     cfsp->ctrl_socks = NULL;
     rtpp_gen_uid_free();
 #if defined(LIBRTPPROXY)
-    rtpp_glog_fin();
+    RTPP_OBJ_DECREF(cfsp->glog);
 #endif
 }
 
@@ -921,21 +965,24 @@ int
 main(int argc, const char * const *argv)
 #else
 struct rtpp_cfg *
-rtpp_main(int argc, const char * const *argv)
+_rtpp_main(int argc, const char * const *argv)
 #endif
 {
     int i, len, pid_fd;
-    static struct rtpp_cfg cfs;
+    struct rtpp_cfg *cfsp;
     char buf[256];
     struct sched_param sparam;
     void *elp;
     struct rtpp_timed_task *tp;
     struct rtpp_daemon_rope drop;
 
-    memset(&cfs, 0, sizeof(cfs));
+    cfsp = rtpp_sys_malloc(sizeof(*cfsp));
+    if (cfsp == NULL)
+        MAIN_ERR(1, "allocating struct rtpp_cfg failed");
+    memset(cfsp, '\0', sizeof(*cfsp));
 
 #if defined(LIBRTPPROXY)
-    cfs.ropts = (struct rtpp_run_options){
+    cfsp->ropts = (struct rtpp_run_options){
         .no_pid = 1, .no_chdir = 1, .no_daemon = 1, .no_sigtrap = 1
     };
 #endif
@@ -955,24 +1002,24 @@ rtpp_main(int argc, const char * const *argv)
     }
 #endif
 
-    cfs.ctrl_socks = rtpp_zmalloc(sizeof(struct rtpp_list));
-    if (cfs.ctrl_socks == NULL) {
+    cfsp->ctrl_socks = rtpp_zmalloc(sizeof(struct rtpp_list));
+    if (cfsp->ctrl_socks == NULL) {
          MAIN_ERR(1, "can't allocate memory for the struct ctrl_socks");
          /* NOTREACHED */
     }
 
 #if ENABLE_MODULE_IF
-    cfs.modules_cf = rtpp_modman_ctor();
-    if (cfs.modules_cf == NULL) {
+    cfsp->modules_cf = rtpp_modman_ctor();
+    if (cfsp->modules_cf == NULL) {
          MAIN_ERR(1, "can't allocate memory for the struct modules_cf");
          /* NOTREACHED */
     }
 #else
-    cfs._pad = (void *)0x12345678;
+    cfsp->_pad = (void *)0x12345678;
 #endif
 
-    cfs.runcreds = rtpp_zmalloc(sizeof(struct rtpp_runcreds));
-    if (cfs.runcreds == NULL) {
+    cfsp->runcreds = rtpp_zmalloc(sizeof(struct rtpp_runcreds));
+    if (cfsp->runcreds == NULL) {
          MAIN_ERR(1, "can't allocate memory for the struct runcreds");
          /* NOTREACHED */
     }
@@ -983,81 +1030,81 @@ rtpp_main(int argc, const char * const *argv)
         /* NOTREACHED */
     }
 
-    cfs.glog = rtpp_log_ctor("rtpproxy", NULL, LF_REOPEN);
-    if (cfs.glog == NULL) {
+    cfsp->glog = rtpp_log_ctor("rtpproxy", NULL, LF_REOPEN);
+    if (cfsp->glog == NULL) {
         MAIN_ERR(1, "can't initialize logging subsystem");
         /* NOTREACHED */
     }
-    CALL_METHOD(cfs.glog, setlevel, RTPP_LOG_ERR);
+    CALL_METHOD(cfsp->glog, setlevel, RTPP_LOG_ERR);
  #ifdef RTPP_CHECK_LEAKS
-    rtpp_memdeb_setlog(MEMDEB_SYM, cfs.glog);
+    rtpp_memdeb_setlog(MEMDEB_SYM, cfsp->glog);
     rtpp_memdeb_approve(MEMDEB_SYM, "_rtpp_log_open", 1, "Referenced by memdeb itself");
  #endif
 
-    _sig_cf = &cfs;
 #if !defined(LIBRTPPROXY)
+    _sig_cf = cfsp;
     atexit(rtpp_glog_fin);
 #endif
 
-    int r = init_config(&cfs, argc, argv);
+    int r = init_config(cfsp, argc, argv);
     if (r < 0) {
         MAIN_EXIT(-r);
     }
 
-    cfs.sessions_ht = rtpp_hash_table_ctor(rtpp_ht_key_str_t, 0);
-    if (cfs.sessions_ht == NULL) {
+    cfsp->sessions_ht = rtpp_hash_table_ctor(rtpp_ht_key_str_t, 0);
+    if (cfsp->sessions_ht == NULL) {
         MAIN_ERR(1, "can't allocate memory for the hash table");
          /* NOTREACHED */
     }
-    cfs.rtp_streams_wrt = rtpp_weakref_ctor();
-    if (cfs.rtp_streams_wrt == NULL) {
+    cfsp->rtp_streams_wrt = rtpp_weakref_ctor();
+    if (cfsp->rtp_streams_wrt == NULL) {
         MAIN_ERR(1, "can't allocate memory for the RTP streams weakref table");
          /* NOTREACHED */
     }
-    cfs.rtcp_streams_wrt = rtpp_weakref_ctor();
-    if (cfs.rtcp_streams_wrt == NULL) {
+    cfsp->rtcp_streams_wrt = rtpp_weakref_ctor();
+    if (cfsp->rtcp_streams_wrt == NULL) {
         MAIN_ERR(1, "can't allocate memory for the RTCP streams weakref table");
          /* NOTREACHED */
     }
-    cfs.sessinfo = rtpp_sessinfo_ctor(&cfs);
-    if (cfs.sessinfo == NULL) {
+    cfsp->sessinfo = rtpp_sessinfo_ctor(cfsp);
+    if (cfsp->sessinfo == NULL) {
         MAIN_ERRX(1, "cannot construct rtpp_sessinfo structure");
     }
 
-    cfs.rtpp_stats = rtpp_stats_ctor();
-    if (cfs.rtpp_stats == NULL) {
+    cfsp->rtpp_stats = rtpp_stats_ctor();
+    if (cfsp->rtpp_stats == NULL) {
         MAIN_ERR(1, "can't allocate memory for the stats data");
          /* NOTREACHED */
     }
 
     for (i = 0; i <= RTPP_PT_MAX; i++) {
-        cfs.port_table[i] = rtpp_port_table_ctor(cfs.port_min,
-          cfs.port_max, cfs.seq_ports, cfs.port_ctl);
-        if (cfs.port_table[i] == NULL) {
+        cfsp->port_table[i] = rtpp_port_table_ctor(cfsp->port_min,
+          cfsp->port_max, cfsp->seq_ports, cfsp->port_ctl);
+        if (cfsp->port_table[i] == NULL) {
             MAIN_ERR(1, "can't allocate memory for the ports data");
             /* NOTREACHED */
         }
     }
 
-    if (rtpp_controlfd_init(&cfs) != 0) {
+    if (rtpp_controlfd_init(cfsp) != 0) {
         MAIN_ERR(1, "can't initialize control socket%s",
-          cfs.ctrl_socks->len > 1 ? "s" : "");
+          cfsp->ctrl_socks->len > 1 ? "s" : "");
     }
 
-    if (cfs.ropts.no_daemon == 0) {
-        if (cfs.ropts.no_chdir == 0) {
-            cfs.cwd_orig = getcwd(NULL, 0);
-            if (cfs.cwd_orig == NULL) {
+    if (cfsp->ropts.no_daemon == 0) {
+        if (cfsp->ropts.no_chdir == 0) {
+            cfsp->cwd_orig = getcwd(NULL, 0);
+            if (cfsp->cwd_orig == NULL) {
                 MAIN_ERR(1, "getcwd");
             }
         }
-	drop = rtpp_daemon(cfs.ropts.no_chdir, 0);
+	drop = rtpp_daemon(cfsp->ropts.no_chdir, 0, cfsp->no_redirect);
 	if (drop.result == -1)
 	    MAIN_ERR(1, "can't switch into daemon mode");
 	    /* NOTREACHED */
     }
 
-    if (CALL_METHOD(cfs.glog, start, &cfs) != 0) {
+    if (CALL_METHOD(cfsp->glog, start, cfsp) != 0) {
         /* We cannot possibly function with broken logs, bail out */
         syslog(LOG_CRIT, "rtpproxy pid %d has failed to initialize logging"
             " facilities: crash", getpid());
@@ -1067,110 +1114,110 @@ rtpp_main(int argc, const char * const *argv)
 #if !defined(LIBRTPPROXY)
     atexit(ehandler);
 #endif
-    RTPP_LOG(cfs.glog, RTPP_LOG_INFO, "rtpproxy started, pid %d", getpid());
+    RTPP_LOG(cfsp->glog, RTPP_LOG_INFO, "rtpproxy started, pid %d", getpid());
 
-    if (cfs.sched_policy != SCHED_OTHER) {
-        sparam.sched_priority = sched_get_priority_max(cfs.sched_policy);
-        if (sched_setscheduler(0, cfs.sched_policy, &sparam) == -1) {
-            RTPP_ELOG(cfs.glog, RTPP_LOG_ERR, "sched_setscheduler(SCHED_%s, %d)",
-              (cfs.sched_policy == SCHED_FIFO) ? "FIFO" : "RR", sparam.sched_priority);
+    if (cfsp->sched_policy != SCHED_OTHER) {
+        sparam.sched_priority = sched_get_priority_max(cfsp->sched_policy);
+        if (sched_setscheduler(0, cfsp->sched_policy, &sparam) == -1) {
+            RTPP_ELOG(cfsp->glog, RTPP_LOG_ERR, "sched_setscheduler(SCHED_%s, %d)",
+              (cfsp->sched_policy == SCHED_FIFO) ? "FIFO" : "RR", sparam.sched_priority);
         }
     }
-    if (cfs.sched_nice != PRIO_UNSET) {
-        if (setpriority(PRIO_PROCESS, 0, cfs.sched_nice) == -1) {
-            RTPP_ELOG(cfs.glog, RTPP_LOG_ERR, "can't set scheduling "
-              "priority to %d", cfs.sched_nice);
+    if (cfsp->sched_nice != PRIO_UNSET) {
+        if (setpriority(PRIO_PROCESS, 0, cfsp->sched_nice) == -1) {
+            RTPP_ELOG(cfsp->glog, RTPP_LOG_ERR, "can't set scheduling "
+              "priority to %d", cfsp->sched_nice);
             MAIN_EXIT(1);
         }
     }
 
-    if (cfs.ropts.no_pid == 0) {
-        pid_fd = open(cfs.pid_file, O_WRONLY | O_CREAT, DEFFILEMODE);
+    if (cfsp->ropts.no_pid == 0) {
+        pid_fd = open(cfsp->pid_file, O_WRONLY | O_CREAT, DEFFILEMODE);
         if (pid_fd < 0) {
-            RTPP_ELOG(cfs.glog, RTPP_LOG_ERR, "can't open pidfile for writing");
+            RTPP_ELOG(cfsp->glog, RTPP_LOG_ERR, "can't open pidfile for writing");
         }
     } else {
         pid_fd = -1;
     }
 
-    if (cfs.runcreds->uname != NULL || cfs.runcreds->gname != NULL) {
-	if (drop_privileges(&cfs) != 0) {
-	    RTPP_ELOG(cfs.glog, RTPP_LOG_ERR,
+    if (cfsp->runcreds->uname != NULL || cfsp->runcreds->gname != NULL) {
+	if (drop_privileges(cfsp) != 0) {
+	    RTPP_ELOG(cfsp->glog, RTPP_LOG_ERR,
 	      "can't switch to requested user/group");
 	    MAIN_EXIT(1);
 	}
     }
-    set_rlimits(&cfs);
+    set_rlimits(cfsp);
 
-    cfs.pproc_manager = pproc_manager_ctor(cfs.rtpp_stats, 0);
-    if (cfs.pproc_manager == NULL) {
-        RTPP_LOG(cfs.glog, RTPP_LOG_ERR,
+    cfsp->pproc_manager = pproc_manager_ctor(cfsp->rtpp_stats, 0);
+    if (cfsp->pproc_manager == NULL) {
+        RTPP_LOG(cfsp->glog, RTPP_LOG_ERR,
           "can't init packet prosessing subsystem");
         MAIN_EXIT(1);
     }
 
-    cfs.rtpp_proc_cf = rtpp_proc_async_ctor(&cfs);
-    if (cfs.rtpp_proc_cf == NULL) {
-        RTPP_LOG(cfs.glog, RTPP_LOG_ERR,
+    cfsp->rtpp_proc_cf = rtpp_proc_async_ctor(cfsp);
+    if (cfsp->rtpp_proc_cf == NULL) {
+        RTPP_LOG(cfsp->glog, RTPP_LOG_ERR,
           "can't init RTP processing subsystem");
         MAIN_EXIT(1);
     }
 
-    cfs.proc_servers = rtpp_proc_servers_ctor(&cfs, cfs.rtpp_proc_cf->netio);
-    if (cfs.proc_servers == NULL) {
-        RTPP_LOG(cfs.glog, RTPP_LOG_ERR,
+    cfsp->proc_servers = rtpp_proc_servers_ctor(cfsp, cfsp->rtpp_proc_cf->netio);
+    if (cfsp->proc_servers == NULL) {
+        RTPP_LOG(cfsp->glog, RTPP_LOG_ERR,
           "can't init RTP playback subsystem");
         MAIN_EXIT(1);
     }
 
-    cfs.rtpp_timed_cf = rtpp_timed_ctor(0.01);
-    if (cfs.rtpp_timed_cf == NULL) {
-        RTPP_ELOG(cfs.glog, RTPP_LOG_ERR,
+    cfsp->rtpp_timed_cf = rtpp_timed_ctor(0.01);
+    if (cfsp->rtpp_timed_cf == NULL) {
+        RTPP_ELOG(cfsp->glog, RTPP_LOG_ERR,
           "can't init scheduling subsystem");
         MAIN_EXIT(1);
     }
 
-    tp = CALL_SMETHOD(cfs.rtpp_timed_cf, schedule_rc, 1.0,
-      cfs.rtpp_stats->rcnt, update_derived_stats, NULL,
-      cfs.rtpp_stats);
+    tp = CALL_SMETHOD(cfsp->rtpp_timed_cf, schedule_rc, 1.0,
+      cfsp->rtpp_stats->rcnt, update_derived_stats, NULL,
+      cfsp->rtpp_stats);
     if (tp == NULL) {
-        RTPP_ELOG(cfs.glog, RTPP_LOG_ERR,
+        RTPP_ELOG(cfsp->glog, RTPP_LOG_ERR,
           "can't schedule notification to derive stats");
         MAIN_EXIT(1);
     }
     RTPP_OBJ_DECREF(tp);
 
-    cfs.rtpp_notify_cf = rtpp_notify_ctor(cfs.glog);
-    if (cfs.rtpp_notify_cf == NULL) {
-        RTPP_ELOG(cfs.glog, RTPP_LOG_ERR,
+    cfsp->rtpp_notify_cf = rtpp_notify_ctor(cfsp->glog);
+    if (cfsp->rtpp_notify_cf == NULL) {
+        RTPP_ELOG(cfsp->glog, RTPP_LOG_ERR,
           "can't init timeout notification subsystem");
         MAIN_EXIT(1);
     }
 
-    cfs.rtpp_proc_ttl_cf = rtpp_proc_ttl_ctor(&cfs);
-    if (cfs.rtpp_proc_ttl_cf == NULL) {
-        RTPP_LOG(cfs.glog, RTPP_LOG_ERR,
+    cfsp->rtpp_proc_ttl_cf = rtpp_proc_ttl_ctor(cfsp);
+    if (cfsp->rtpp_proc_ttl_cf == NULL) {
+        RTPP_LOG(cfsp->glog, RTPP_LOG_ERR,
           "can't init TTL processing subsystem");
         MAIN_EXIT(1);
     }
 
 #if ENABLE_MODULE_IF
     const char *failmod;
-    if (CALL_METHOD(cfs.modules_cf, startall, &cfs, &failmod) != 0) {
-        RTPP_ELOG(cfs.glog, RTPP_LOG_ERR,
+    if (CALL_METHOD(cfsp->modules_cf, startall, cfsp, &failmod) != 0) {
+        RTPP_ELOG(cfsp->glog, RTPP_LOG_ERR,
           "%s: dymanic module start has failed", failmod);
         MAIN_EXIT(1);
     }
 #endif
 
-    cfs.rtpp_cmd_cf = rtpp_command_async_ctor(&cfs);
-    if (cfs.rtpp_cmd_cf == NULL) {
-        RTPP_ELOG(cfs.glog, RTPP_LOG_ERR,
+    cfsp->rtpp_cmd_cf = rtpp_command_async_ctor(cfsp);
+    if (cfsp->rtpp_cmd_cf == NULL) {
+        RTPP_ELOG(cfsp->glog, RTPP_LOG_ERR,
           "can't init command processing subsystem");
         MAIN_EXIT(1);
     }
 
-    if (cfs.ropts.no_sigtrap == 0) {
+    if (cfsp->ropts.no_sigtrap == 0) {
         signal(SIGHUP, sighup);
         signal(SIGINT, fatsignal);
         signal(SIGKILL, fatsignal);
@@ -1182,37 +1229,39 @@ rtpp_main(int argc, const char * const *argv)
         signal(SIGPROF, fatsignal);
         signal(SIGUSR1, fatsignal);
         signal(SIGUSR2, fatsignal);
+        void (*bad_handler)(int) = badsignal;
         RTPP_DBGCODE(catchtrace) {
-            signal(SIGQUIT, rtpp_stacktrace);
-            signal(SIGILL, rtpp_stacktrace);
-            signal(SIGTRAP, rtpp_stacktrace);
-            signal(SIGABRT, rtpp_stacktrace);
-#if defined(SIGEMT)
-            signal(SIGEMT, rtpp_stacktrace);
-#endif
-            signal(SIGFPE, rtpp_stacktrace);
-            signal(SIGBUS, rtpp_stacktrace);
-            signal(SIGSEGV, rtpp_stacktrace);
-            signal(SIGSYS, rtpp_stacktrace);
+            bad_handler = rtpp_stacktrace;
         }
+        signal(SIGQUIT, bad_handler);
+        signal(SIGILL, bad_handler);
+        signal(SIGTRAP, bad_handler);
+        signal(SIGABRT, bad_handler);
+#if defined(SIGEMT)
+        signal(SIGEMT, bad_handler);
+#endif
+        signal(SIGFPE, bad_handler);
+        signal(SIGBUS, bad_handler);
+        signal(SIGSEGV, bad_handler);
+        signal(SIGSYS, bad_handler);
     }
 
 #if !defined(LIBRTPPROXY)
-    elp = prdic_init(cfs.target_pfreq / 10.0, 0.0);
+    elp = prdic_init(cfsp->target_pfreq / 10.0, 0.0);
     if (elp == NULL) {
-        RTPP_LOG(cfs.glog, RTPP_LOG_ERR, "prdic_init() failed");
+        RTPP_LOG(cfsp->glog, RTPP_LOG_ERR, "prdic_init() failed");
         MAIN_EXIT(1);
     }
 #endif
 
     if (pid_fd >= 0) {
         if (ftruncate(pid_fd, 0) != 0) {
-            RTPP_ELOG(cfs.glog, RTPP_LOG_ERR, "can't truncate pidfile");
+            RTPP_ELOG(cfsp->glog, RTPP_LOG_ERR, "can't truncate pidfile");
             MAIN_EXIT(1);
         }
         len = sprintf(buf, "%u\n", (unsigned int)getpid());
         if (write(pid_fd, buf, len) != len) {
-            RTPP_ELOG(cfs.glog, RTPP_LOG_ERR, "can't write pidfile");
+            RTPP_ELOG(cfsp->glog, RTPP_LOG_ERR, "can't write pidfile");
             MAIN_EXIT(1);
         }
         close(pid_fd);
@@ -1222,24 +1271,24 @@ rtpp_main(int argc, const char * const *argv)
     sd_notify(0, "READY=1");
 #endif
 
-    if (cfs.ropts.no_daemon == 0) {
+    if (cfsp->ropts.no_daemon == 0) {
         if (rtpp_daemon_rel_parent(&drop) != 0) {
-            RTPP_LOG(cfs.glog, RTPP_LOG_ERR, "parent died prematurely #cry #die");
+            RTPP_LOG(cfsp->glog, RTPP_LOG_ERR, "parent died prematurely #cry #die");
             MAIN_EXIT(1);
         }
     }
 
 #if defined(LIBRTPPROXY)
-    return (&cfs);
+    return (cfsp);
 #endif
 
     for (;;) {
-        if (cfs.fastshutdown != 0) {
+        if (cfsp->fastshutdown != 0) {
             break;
         }
-        if (cfs.slowshutdown != 0 &&
-          CALL_SMETHOD(cfs.sessions_wrt, get_length) == 0) {
-            RTPP_LOG(cfs.glog, RTPP_LOG_INFO,
+        if (cfsp->slowshutdown != 0 &&
+          CALL_SMETHOD(cfsp->sessions_wrt, get_length) == 0) {
+            RTPP_LOG(cfsp->glog, RTPP_LOG_INFO,
               "deorbiting-burn sequence completed, exiting");
             break;
         }
@@ -1247,7 +1296,7 @@ rtpp_main(int argc, const char * const *argv)
     }
     prdic_free(elp);
 
-    rtpp_shutdown(&cfs);
+    rtpp_shutdown(cfsp);
 
 #ifdef HAVE_SYSTEMD_DAEMON
     sd_notify(0, "STATUS=Exited");

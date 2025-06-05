@@ -408,7 +408,7 @@ jobs:
         driver-opts: network=host
 
     - name: Log in to Docker Hub
-      if: ${{ env.DOCKER_RW == 'true' }}
+      if: env.DOCKER_RW == 'true'
       uses: docker/login-action@v3
       with:
         username: ${{ secrets.DOCKER_USERNAME }}
@@ -450,6 +450,12 @@ jobs:
         else
           echo "LIBSSL_APKG=libssl3t64" >> $GITHUB_ENV
         fi
+        if [ "${{ matrix.base_image }}" = "ubuntu:latest" -a "${{ github.ref_name }}" = "${{ github.event.repository.default_branch }}" ]
+        then
+          echo "ADD_LATEST=true" >> "$GITHUB_ENV"
+        else
+          echo "ADD_LATEST=false" >> "$GITHUB_ENV"
+        fi
 
     - name: Extract metadata (tags, labels) for Docker
       id: meta_dkr
@@ -463,6 +469,7 @@ jobs:
           type=ref,event=pr,suffix=-${{ env.OS_TAG}}
           type=raw,value=latest-${{ env.OS_TAG}},enable={{is_default_branch}}
           type=sha,suffix=-${{ env.OS_TAG}}
+          type=raw,value=latest,enable=${{ env.ADD_LATEST == 'true' }}
 
     - name: Extract metadata (tags, labels) for GHCR
       id: meta_ghcr
@@ -476,6 +483,7 @@ jobs:
           type=ref,event=pr,suffix=-${{ env.OS_TAG}}
           type=raw,value=latest-${{ env.OS_TAG}},enable={{is_default_branch}}
           type=sha,suffix=-${{ env.OS_TAG}}
+          type=raw,value=latest,enable=${{ env.ADD_LATEST == 'true' }}
 
     - name: Build Docker image
       uses: docker/build-push-action@v6
@@ -500,7 +508,7 @@ jobs:
         cache-to: ${{ env.CACHE_SPEC }},mode=max
 
     - name: Export ccache
-      if: ${{ env.DOCKER_RW == 'true' }}
+      if: env.DOCKER_RW == 'true'
       uses: docker/build-push-action@v6
       with:
         file: ./docker/Dockerfile.export_ccache
@@ -510,7 +518,7 @@ jobs:
         push: true
 
     - name: Push Docker image
-      if: ${{ env.DOCKER_RW == 'true' }}
+      if: env.DOCKER_RW == 'true'
       uses: docker/build-push-action@v6
       with:
         context: .
@@ -528,7 +536,7 @@ jobs:
         platforms: ${{ env.PLATFORMS }}
 
     - name: Update DockerHub repo description
-      if: ${{ env.DOCKER_RW == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+      if: env.DOCKER_RW == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
       env:
         DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
         DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
