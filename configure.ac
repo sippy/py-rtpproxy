@@ -140,6 +140,21 @@ AC_ARG_ENABLE([silent],
   [ENABLE_SILENT=$enableval],
   [ENABLE_SILENT=no])
 
+AC_ARG_ENABLE([static-crypto],
+  AS_HELP_STRING([--enable-static-crypto], [Link statically against libssl, libcrypto, libsrtp2]),
+  [ENABLE_STATIC_CRYPTO=$enableval],
+  [ENABLE_STATIC_CRYPTO=no])
+
+if test "$ENABLE_STATIC_CRYPTO" = yes; then
+  LIB_CRYPTO='-l:libcrypto.a'
+  LIB_SSL='-l:libssl.a'
+  LIB_SRTP2='-l:libsrtp2.a'
+else
+  LIB_CRYPTO='-lcrypto'
+  LIB_SSL='-lssl'
+  LIB_SRTP2='-lsrtp2'
+fi
+
 # Checks for libraries.
 
 if test "$enable_systemd" = 'yes'
@@ -230,9 +245,11 @@ fi
 AC_CHECK_HEADER(srtp2/srtp.h, found_libsrtp2=yes)
 if test "$found_libsrtp2" = yes
 then
+  save_LIBS="${LIBS}"
+  LIBS="${LIBS} ${LIB_CRYPTO}"
   AC_CHECK_LIB([srtp2], [srtp_protect_mki], [_sp_nargs=3], [_sp_nargs=4])
   AC_CHECK_LIB(srtp2, srtp_init,[
-   LIBS_SRTP="-lsrtp2"
+   LIBS_SRTP="${LIB_SRTP2} ${LIB_CRYPTO}"
    # Test program to check if the srtp_protect function accepts size_t* argument
    AC_MSG_CHECKING(['srtp_protect()' last argument type])
    original_cflags="$CFLAGS"
@@ -249,6 +266,7 @@ then
      [srtp_protect_lastarg=size_t], [srtp_protect_lastarg=int])
    CFLAGS="$original_cflags"
    AC_MSG_RESULT([$srtp_protect_lastarg])
+   LIBS="${save_LIBS}"
    AC_DEFINE_UNQUOTED([SRTP_PROTECT_LASTARG], [${srtp_protect_lastarg}], [Type of the last argument of the srtp_protect() API])
    AC_DEFINE_UNQUOTED([SRTP_PROTECT_NARGS], [${_sp_nargs}], [Number of srtp_protect() arguments])
    AC_DEFINE([ENABLE_SRTP2], 1, [Define if you have libsrtp2 library installed])])
@@ -258,7 +276,7 @@ else
   if test "$found_libsrtp" = yes
   then
     AC_CHECK_LIB(srtp, srtp_init,
-     LIBS_SRTP="-lsrtp"
+     LIBS_SRTP="${LIB_SRTP2} ${LIB_CRYPTO}"
      AC_DEFINE([ENABLE_SRTP], 1, [Define if you have libsrtp library installed]))
   fi
 fi
@@ -480,7 +498,7 @@ AC_CONFIG_FILES([Makefile src/Makefile makeann/Makefile
  modules/catch_dtmf/Makefile modules/badmod/Makefile libxxHash/Makefile
  libre/Makefile modules/dtls_gw/Makefile modules/ice_lite/Makefile
  pertools/Makefile pertools/udp_contention/Makefile libucl/Makefile
- python/sippy_lite/sippy/Time/clock_dtime.py doc/Makefile])
+ doc/Makefile])
 
 AM_COND_IF([TESTS_EXIST], [
   AC_CONFIG_FILES([tests/Makefile])
@@ -504,4 +522,7 @@ AC_SUBST(LIBS_ELPERIODIC)
 AC_SUBST(LIBS_UNWIND)
 AC_SUBST(SIZEOF_TIME_T)
 AC_SUBST(OPT_CFLAGS)
+AC_SUBST(LIB_CRYPTO)
+AC_SUBST(LIB_SSL)
+AC_SUBST(LIB_SRTP2)
 AC_OUTPUT

@@ -30,8 +30,10 @@
 #define _GNU_SOURCE
 #endif
 
+#include <dlfcn.h>
 #include <stdatomic.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -66,24 +68,33 @@ static void rtpp_refcnt_decref(struct rtpp_refcnt *, HERETYPE);
 #define RC_FLAG_HASPRDTOR  (1 << 3)
 #define RC_FLAG_PA_STDFREE (1 << 4)
 
+#define CACHE_SIZE 64
+
+struct dtor_pair {
+    rtpp_refcnt_dtor_t f;
+    union {
+        void *data;
+        struct rtpp_refcnt *rcnt;
+    };
+};
+
 struct rtpp_refcnt_priv
 {
     struct rtpp_refcnt pub;
-    _Atomic(int) cnt;
-    rtpp_refcnt_dtor_t dtor_f;
-    void *data;
-    rtpp_refcnt_dtor_t pre_dtor_f;
-    void *pd_data;
+    _Atomic(int) cnt __attribute__((aligned(CACHE_SIZE)));
+    int shared __attribute__((aligned(CACHE_SIZE)));
+    int ulen;
+#if RTPP_DEBUG_refcnt
     int flags;
+#endif
+    struct dtor_pair dtors[MAX_DTORS];
 };
 const size_t rtpp_refcnt_osize = sizeof(struct rtpp_refcnt_priv);
 
 static void rtpp_refcnt_attach(struct rtpp_refcnt *, rtpp_refcnt_dtor_t,
   void *);
+static void rtpp_refcnt_attach_rc(struct rtpp_refcnt *, struct rtpp_refcnt *);
 static void *rtpp_refcnt_getdata(struct rtpp_refcnt *);
-static void rtpp_refcnt_reg_pd(struct rtpp_refcnt *, rtpp_refcnt_dtor_t,
-  void *);
-static void rtpp_refcnt_use_stdfree(struct rtpp_refcnt *, void *);
 
 #if RTPP_DEBUG_refcnt
 static void rtpp_refcnt_traceen(struct rtpp_refcnt *, HERETYPE);
@@ -94,13 +105,12 @@ DEFINE_SMETHODS(rtpp_refcnt,
     .incref = &rtpp_refcnt_incref,
     .decref = &rtpp_refcnt_decref,
     .getdata = &rtpp_refcnt_getdata,
-    .reg_pd = &rtpp_refcnt_reg_pd,
 #if RTPP_DEBUG_refcnt
     .traceen = rtpp_refcnt_traceen,
     .peek = rtpp_refcnt_peek,
 #endif
     .attach = &rtpp_refcnt_attach,
-    .use_stdfree = &rtpp_refcnt_use_stdfree,
+    .attach_rc = &rtpp_refcnt_attach_rc,
 );
 
 #if defined(RTPP_CHECK_LEAKS)
@@ -112,6 +122,9 @@ rtpp_refcnt_free(void *p)
 }
 #endif
 
+#define DTOR_PAIR_INIT(fn, fd) (struct dtor_pair){.f=(fn), .data=(fd)}
+#define DTOR_RC_INIT(rc) (struct dtor_pair){.rcnt=(rc)}
+
 struct rtpp_refcnt *
 rtpp_refcnt_ctor(void *data, rtpp_refcnt_dtor_t dtor_f)
 {
@@ -121,29 +134,46 @@ rtpp_refcnt_ctor(void *data, rtpp_refcnt_dtor_t dtor_f)
     if (pvt == NULL) {
         return (NULL);
     }
-    pvt->data = data;
+#if !defined(RTPP_CHECK_LEAKS)
+    pvt->dtors[0] = DTOR_PAIR_INIT(free, pvt);
+#else
+    pvt->dtors[0] = DTOR_PAIR_INIT(rtpp_refcnt_free, pvt);
+#endif
     if (dtor_f != NULL) {
-        pvt->dtor_f = dtor_f;
-        pvt->flags |= RC_FLAG_HASDTOR;
+        pvt->dtors[1] = DTOR_PAIR_INIT(dtor_f, data);
+        pvt->ulen = 1;
+    } else if (data != NULL) {
+#if !defined(RTPP_CHECK_LEAKS)
+        pvt->dtors[1] = DTOR_PAIR_INIT(free, data);
+#else
+        pvt->dtors[1] = DTOR_PAIR_INIT(rtpp_refcnt_free, data);
+#endif
+        pvt->ulen = 1;
     }
 #if defined(RTPP_DEBUG)
     pvt->pub.smethods = rtpp_refcnt_smethods;
 #endif
-    atomic_init(&pvt->cnt, 1);
     return (&pvt->pub);
 }
 
 struct rtpp_refcnt *
-rtpp_refcnt_ctor_pa(void *pap)
+rtpp_refcnt_ctor_pa(void *pap, void *data)
 {
     struct rtpp_refcnt_priv *pvt;
 
     pvt = (struct rtpp_refcnt_priv *)pap;
+    if (data != NULL) {
+#if !defined(RTPP_CHECK_LEAKS)
+        pvt->dtors[0] = DTOR_PAIR_INIT(free, data);
+#else
+        pvt->dtors[0] = DTOR_PAIR_INIT(rtpp_refcnt_free, data);
+#endif
+    } else {
+        pvt->ulen = -1;
+    }
 #if defined(RTPP_DEBUG)
     pvt->pub.smethods = rtpp_refcnt_smethods;
 #endif
-    atomic_init(&pvt->cnt, 1);
-    pvt->flags |= RC_FLAG_PA;
     return (&pvt->pub);
 }
 
@@ -154,11 +184,20 @@ rtpp_refcnt_attach(struct rtpp_refcnt *pub, rtpp_refcnt_dtor_t dtor_f,
     struct rtpp_refcnt_priv *pvt;
 
     PUB2PVT(pub, pvt);
-    RTPP_DBG_ASSERT(pvt->data == NULL && pvt->dtor_f == NULL &&
-      !(pvt->flags & RC_FLAG_HASDTOR));
-    pvt->data = data;
-    pvt->dtor_f = dtor_f;
-    pvt->flags |= RC_FLAG_HASDTOR;
+    RTPP_DBG_ASSERT(MAX_DTORS > pvt->ulen);
+    pvt->ulen += 1;
+    pvt->dtors[pvt->ulen] = DTOR_PAIR_INIT(dtor_f, data);
+}
+
+static void
+rtpp_refcnt_attach_rc(struct rtpp_refcnt *pub, struct rtpp_refcnt *other)
+{
+    struct rtpp_refcnt_priv *pvt;
+
+    PUB2PVT(pub, pvt);
+    RTPP_DBG_ASSERT(MAX_DTORS > pvt->ulen);
+    pvt->ulen += 1;
+    pvt->dtors[pvt->ulen] = DTOR_RC_INIT(other);
 }
 
 static void
@@ -169,10 +208,16 @@ rtpp_refcnt_incref(struct rtpp_refcnt *pub, HERETYPE mlp)
 
     PUB2PVT(pub, pvt);
     RTPP_DBGCODE() {
-        oldcnt = atomic_load_explicit(&pvt->cnt, memory_order_relaxed);
+        oldcnt = atomic_load_explicit(&pvt->cnt, memory_order_relaxed) + 1;
         RTPP_DBG_ASSERT(oldcnt > 0 && oldcnt < RC_ABS_MAX);
     }
-    oldcnt = atomic_fetch_add_explicit(&pvt->cnt, 1, memory_order_relaxed);
+    if (pvt->shared) {
+        oldcnt = atomic_fetch_add_explicit(&pvt->cnt, 1, memory_order_relaxed) + 1;
+    } else {
+        oldcnt = 1;
+        pvt->shared = 1;
+        atomic_store_explicit(&pvt->cnt, 1, memory_order_release);
+    }
 #if RTPP_DEBUG_refcnt
     if (pvt->flags & RC_FLAG_TRACE) {
 #ifdef RTPP_DEBUG
@@ -195,11 +240,11 @@ static void
 rtpp_refcnt_decref(struct rtpp_refcnt *pub, HERETYPE mlp)
 {
     struct rtpp_refcnt_priv *pvt;
-    int oldcnt, flags;
+    int oldcnt;
 
     PUB2PVT(pub, pvt);
     RTPP_DBGCODE() {
-        oldcnt = atomic_load_explicit(&pvt->cnt, memory_order_relaxed);
+        oldcnt = atomic_load_explicit(&pvt->cnt, memory_order_relaxed) + 1;
         RTPP_DBG_ASSERT(oldcnt > 0 && oldcnt < RC_ABS_MAX);
     }
 #if RTPP_DEBUG_refcnt
@@ -208,9 +253,13 @@ rtpp_refcnt_decref(struct rtpp_refcnt *pub, HERETYPE mlp)
      * somebody decrements it and deallocates. Atomic is not needed since
      * this initialized at the init time.
      */
-    flags = pvt->flags;
+    int flags = pvt->flags;
 #endif
-    oldcnt = atomic_fetch_sub_explicit(&pvt->cnt, 1, memory_order_release);
+    if (pvt->shared) {
+        oldcnt = atomic_fetch_sub_explicit(&pvt->cnt, 1, memory_order_release) + 1;
+    } else {
+        oldcnt = 1;
+    }
 #if RTPP_DEBUG_refcnt
     if (flags & RC_FLAG_TRACE) {
 #ifdef RTPP_DEBUG
@@ -228,41 +277,30 @@ rtpp_refcnt_decref(struct rtpp_refcnt *pub, HERETYPE mlp)
 #endif
     RTPP_DBG_ASSERT(oldcnt > 0);
     if (oldcnt == 1) {
-        atomic_thread_fence(memory_order_acquire);
-        flags = pvt->flags;
-        if ((flags & RC_FLAG_PA) == 0) {
-            if (flags & RC_FLAG_HASPRDTOR) {
-                pvt->pre_dtor_f(pvt->pd_data);
+        if (pvt->shared) {
+            atomic_thread_fence(memory_order_acquire);
+        }
+        for (int i = pvt->ulen; i >= 0; i--) {
+            struct dtor_pair *dp = &pvt->dtors[i];
+#if RTPP_DEBUG_refcnt
+            if (flags & RC_FLAG_TRACE) {
+                Dl_info info;
+                if (dladdr(dp->f, &info) && info.dli_sname != NULL)
+                    fprintf(stderr, "calling destructor %s@<%p>(%p)\n", info.dli_sname,
+                      dp->f, dp->data);
+                else
+                    fprintf(stderr, "calling destructor @<%p>(%p)\n", dp->f, dp->data);
             }
-            if (flags & RC_FLAG_HASDTOR) {
-                pvt->dtor_f(pvt->data);
+#endif
+            if (i == 0)
+                rtpp_refcnt_fin(pub);
+            if (dp->f != NULL) {
+                dp->f(dp->data);
             } else {
-#if !defined(RTPP_CHECK_LEAKS)
-                free(pvt->data);
-#else
-                rtpp_refcnt_free(pvt->data);
-#endif
-            }
-            rtpp_refcnt_fin(pub);
-            free(pvt);
-        } else {
-            rtpp_refcnt_fin(pub);
-            if (flags & RC_FLAG_HASPRDTOR) {
-                pvt->pre_dtor_f(pvt->pd_data);
-            }
-            if (flags & RC_FLAG_HASDTOR) {
-                pvt->dtor_f(pvt->data);
-            }
-            if (flags & RC_FLAG_PA_STDFREE) {
-#if !defined(RTPP_CHECK_LEAKS)
-                free(pvt->data);
-#else
-                rtpp_refcnt_free(pvt->data);
-#endif
+                struct rtpp_refcnt *other = dp->rcnt;
+                rtpp_refcnt_decref(other, mlp);
             }
         }
-
-        return;
     }
 }
 
@@ -272,23 +310,8 @@ rtpp_refcnt_getdata(struct rtpp_refcnt *pub)
     struct rtpp_refcnt_priv *pvt;
 
     PUB2PVT(pub, pvt);
-    RTPP_DBG_ASSERT(atomic_load(&pvt->cnt) > 0);
-    return (pvt->data);
-}
-
-static void
-rtpp_refcnt_reg_pd(struct rtpp_refcnt *pub, rtpp_refcnt_dtor_t pre_dtor_f,
-  void *pd_data)
-{
-    struct rtpp_refcnt_priv *pvt;
-
-    PUB2PVT(pub, pvt);
-    RTPP_DBG_ASSERT(pvt->pd_data == NULL && pvt->pre_dtor_f == NULL &&
-      !(pvt->flags & RC_FLAG_HASPRDTOR));
-    RTPP_DBG_ASSERT(pvt->pre_dtor_f == NULL);
-    pvt->pre_dtor_f = pre_dtor_f;
-    pvt->pd_data = pd_data;
-    pvt->flags |= RC_FLAG_HASPRDTOR;
+    RTPP_DBG_ASSERT(atomic_load(&pvt->cnt) >= 0 && pvt->ulen >= 0);
+    return (pvt->dtors[0].data);
 }
 
 #if RTPP_DEBUG_refcnt
@@ -299,7 +322,7 @@ rtpp_refcnt_traceen(struct rtpp_refcnt *pub, HERETYPE mlp)
 
     PUB2PVT(pub, pvt);
     pvt->flags |= RC_FLAG_TRACE;
-    int oldcnt = atomic_load_explicit(&pvt->cnt, memory_order_relaxed);
+    int oldcnt = atomic_load_explicit(&pvt->cnt, memory_order_relaxed) + 1;
     fprintf(stderr, CODEPTR_FMT(": rtpp_refcnt(%p, %u).traceen()\n", mlp, pub, oldcnt));
 }
 
@@ -309,18 +332,6 @@ rtpp_refcnt_peek(struct rtpp_refcnt *pub)
     struct rtpp_refcnt_priv *pvt;
 
     PUB2PVT(pub, pvt);
-    return atomic_load_explicit(&pvt->cnt, memory_order_relaxed);
+    return atomic_load_explicit(&pvt->cnt, memory_order_relaxed) + 1;
 }
 #endif
-
-static void
-rtpp_refcnt_use_stdfree(struct rtpp_refcnt *pub, void *data)
-{
-    struct rtpp_refcnt_priv *pvt;
-
-    PUB2PVT(pub, pvt);
-    RTPP_DBG_ASSERT(pvt->data == NULL && (pvt->flags & RC_FLAG_PA) &&
-      !(pvt->flags & RC_FLAG_PA_STDFREE));
-    pvt->flags |= RC_FLAG_PA_STDFREE;
-    pvt->data = data;
-}

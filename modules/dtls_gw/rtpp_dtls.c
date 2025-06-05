@@ -50,6 +50,7 @@
 struct rtpp_dtls_priv {
     struct rtpp_dtls pub;
     const struct rtpp_cfg *cfsp;
+    struct rtpp_minfo *mself;
     SSL_CTX *ctx;
     X509 *cert;
     char fingerprint[FP_DIGEST_STRBUF_LEN];
@@ -76,11 +77,10 @@ rtpp_dtls_dtor(struct rtpp_dtls_priv *pvt)
 
     X509_free(pvt->cert);
     SSL_CTX_free(pvt->ctx);
-    free(pvt);
 }
 
 struct rtpp_dtls *
-rtpp_dtls_ctor(const struct rtpp_cfg *cfsp)
+rtpp_dtls_ctor(const struct rtpp_cfg *cfsp, struct rtpp_minfo *mself)
 {
     struct rtpp_dtls_priv *pvt;
 
@@ -110,6 +110,7 @@ rtpp_dtls_ctor(const struct rtpp_cfg *cfsp)
     pvt->pub.fingerprint = pvt->fingerprint;
     pvt->pub.newconn = &rtpp_dtls_newconn;
     pvt->cfsp = cfsp;
+    pvt->mself = mself;
     CALL_SMETHOD(pvt->pub.rcnt, attach, (rtpp_refcnt_dtor_t)rtpp_dtls_dtor, pvt);
     return (&(pvt->pub));
 e3:
@@ -130,7 +131,7 @@ rtpp_dtls_newconn(struct rtpp_dtls *self, struct rtpp_stream *dtls_strmp)
 
     PUB2PVT(self, pvt);
 
-    conn = rtpp_dtls_conn_ctor(pvt->cfsp, pvt->ctx, dtls_strmp);
+    conn = rtpp_dtls_conn_ctor(pvt->cfsp, pvt->ctx, dtls_strmp, pvt->mself);
     return (conn);
 }
 
