@@ -70,6 +70,7 @@
 
 struct rtpp_module_priv {
     struct rtpp_notify *notifier;
+    struct rtpp_minfo *mself;
 };
 
 struct catch_dtmf_einfo {
@@ -94,9 +95,11 @@ struct catch_dtmf_stream_cfg {
     _Atomic(enum pproc_action) act;
     struct catch_dtmf_edata *edata;
     const struct rtpp_timeout_data *rtdp;
+    struct rtpp_minfo *mself;
 };
 
-static struct rtpp_module_priv *rtpp_catch_dtmf_ctor(const struct rtpp_cfg *);
+static struct rtpp_module_priv *rtpp_catch_dtmf_ctor(const struct rtpp_cfg *,
+  struct rtpp_minfo *);
 static void rtpp_catch_dtmf_dtor(struct rtpp_module_priv *);
 static void rtpp_catch_dtmf_worker(const struct rtpp_wthrdata *);
 static int rtpp_catch_dtmf_handle_command(struct rtpp_module_priv *,
@@ -110,7 +113,7 @@ static struct pproc_act rtpp_catch_dtmf_enqueue(const struct pkt_proc_ctx *);
 RTPP_MEMDEB_APP_STATIC;
 #endif
 
-struct rtpp_minfo RTPP_MOD_SELF = {
+const struct rtpp_minfo RTPP_MOD_SELF = {
     .descr.name = "catch_dtmf",
     .descr.ver = MI_VER_INIT(),
     .descr.module_id = 3,
@@ -121,6 +124,7 @@ struct rtpp_minfo RTPP_MOD_SELF = {
         .queue_size = RTPQ_MEDIUM_CB_LEN,
     },
     .capi = &(const struct rtpp_cplane_handlers){.ul_subc_handle = rtpp_catch_dtmf_handle_command},
+    .fn = &(struct rtpp_minfo_fset){0},
 #ifdef RTPP_CHECK_LEAKS
     .memdeb_p = &MEMDEB_SYM
 #endif
@@ -128,13 +132,6 @@ struct rtpp_minfo RTPP_MOD_SELF = {
 #if defined(LIBRTPPROXY)
 DATA_SET(rtpp_modules, RTPP_MOD_SELF);
 #endif
-
-static void
-rtpp_catch_dtmf_edata_dtor(void *p)
-{
-
-    mod_free(p);
-}
 
 static struct catch_dtmf_edata *
 rtpp_catch_dtmf_edata_ctor(enum rtpp_stream_side side)
@@ -150,7 +147,6 @@ rtpp_catch_dtmf_edata_ctor(enum rtpp_stream_side side)
         edata->hst[i].digit = -1;
     }
     edata->side = side;
-    CALL_SMETHOD(edata->rcnt, attach, rtpp_catch_dtmf_edata_dtor, edata);
     return edata;
 e0:
     return (NULL);
@@ -202,7 +198,7 @@ rtpp_catch_dtmf_worker(const struct rtpp_wthrdata *wp)
         struct rtp_dtmf_event *dtmf =
             (struct rtp_dtmf_event *)(wip->pkt->data.buf + sizeof(rtp_hdr_t));
         if (dtmf->event > sizeof(dtmf_events) - 1) {
-            RTPP_LOG(RTPP_MOD_SELF.log, RTPP_LOG_DBUG, "Unhandled DTMF event %u", dtmf->event);
+            RTPP_LOG(pvt->mself->log, RTPP_LOG_DBUG, "Unhandled DTMF event %u", dtmf->event);
             goto skip;
         }
         ei.digit = dtmf_events[dtmf->event];
@@ -233,13 +229,13 @@ rtpp_catch_dtmf_worker(const struct rtpp_wthrdata *wp)
         }
         if (!eip->pending) {
             if (!dtmf->end && eip->duration <= ei.duration)
-                RTPP_LOG(RTPP_MOD_SELF.log, RTPP_LOG_WARN, "Received DTMF for %c without "
+                RTPP_LOG(pvt->mself->log, RTPP_LOG_WARN, "Received DTMF for %c without "
                         "start %d", ei.digit, eip->pending);
             goto skip;
         }
 
         if (ei.digit != eip->digit) {
-            RTPP_LOG(RTPP_MOD_SELF.log, RTPP_LOG_WARN, "Received DTMF for %c "
+            RTPP_LOG(pvt->mself->log, RTPP_LOG_WARN, "Received DTMF for %c "
                     "while processing %c", ei.digit, eip->digit);
             goto skip;
         }
@@ -259,26 +255,13 @@ rtpp_catch_dtmf_worker(const struct rtpp_wthrdata *wp)
           rtpp_str_fix(&notify_tag), notyfy_type);
 
 skip:
-        RTPP_OBJ_DECREF(wip->edata);
-        RTPP_OBJ_DECREF(wip->rtdp);
-        RTPP_OBJ_DECREF(wip->pkt);
         RTPP_OBJ_DECREF(wi);
     }
 }
 
-static void
-catch_dtmf_data_dtor(struct catch_dtmf_stream_cfg *rtps_c)
-{
-
-    RTPP_OBJ_DECREF(rtps_c->rtdp);
-    RTPP_OBJ_DECREF(rtps_c->edata);
-    free(rtps_c);
-    RC_DECREF(RTPP_MOD_SELF.module_rcnt);
-}
-
 static struct catch_dtmf_stream_cfg *
 catch_dtmf_data_ctor(const struct rtpp_subc_ctx *ctxp, const rtpp_str_t *dtmf_tag,
-  int new_pt)
+  int new_pt, struct rtpp_minfo *mself)
 {
     struct catch_dtmf_stream_cfg *rtps_c;
 
@@ -286,26 +269,27 @@ catch_dtmf_data_ctor(const struct rtpp_subc_ctx *ctxp, const rtpp_str_t *dtmf_ta
     if (rtps_c == NULL) {
         goto e0;
     }
+    rtps_c->mself = mself;
+    RC_INCREF(mself->super_rcnt);
+    RTPP_OBJ_DTOR_ATTACH_RC(rtps_c, mself->super_rcnt);
+    rtps_c->edata = rtpp_catch_dtmf_edata_ctor(ctxp->strmp_in->side);
+    if (!rtps_c->edata) {
+        RTPP_LOG(mself->log, RTPP_LOG_ERR, "cannot create edata (sp=%p)",
+          ctxp->strmp_in);
+        goto e1;
+    }
+    RTPP_OBJ_DTOR_ATTACH_RC(rtps_c, rtps_c->edata->rcnt);
     rtps_c->rtdp = rtpp_timeout_data_ctor(ctxp->sessp->timeout_data->notify_target,
       dtmf_tag);
     if (rtps_c->rtdp == NULL) {
         goto e1;
     }
+    RTPP_OBJ_DTOR_ATTACH_RC(rtps_c, rtps_c->rtdp->rcnt);
     atomic_init(&(rtps_c->pt), new_pt);
     atomic_init(&(rtps_c->act), PPROC_ACT_TEE_v);
-    rtps_c->edata = rtpp_catch_dtmf_edata_ctor(ctxp->strmp_in->side);
-    if (!rtps_c->edata) {
-        RTPP_LOG(RTPP_MOD_SELF.log, RTPP_LOG_ERR, "cannot create edata (sp=%p)",
-          ctxp->strmp_in);
-        goto e2;
-    }
-    RC_INCREF(RTPP_MOD_SELF.module_rcnt);
-    CALL_SMETHOD(rtps_c->rcnt, attach, (rtpp_refcnt_dtor_t)catch_dtmf_data_dtor, rtps_c);
     return (rtps_c);
-e2:
-    RTPP_OBJ_DECREF(rtps_c->rtdp);
 e1:
-    mod_free(rtps_c);
+    RTPP_OBJ_DECREF(rtps_c);
 e0:
     return (NULL);
 }
@@ -321,18 +305,18 @@ rtpp_catch_dtmf_handle_command(struct rtpp_module_priv *pvt,
     rtpp_str_const_t dtmf_tag;
 
     if (ctxp->sessp->timeout_data == NULL) {
-        RTPP_LOG(RTPP_MOD_SELF.log, RTPP_LOG_ERR, "notification is not enabled (sp=%p)",
+        RTPP_LOG(pvt->mself->log, RTPP_LOG_ERR, "notification is not enabled (sp=%p)",
           ctxp->sessp);
         return (-1);
     }
     if (ctxp->subc_args->c < 2) {
-        RTPP_LOG(RTPP_MOD_SELF.log, RTPP_LOG_DBUG, "no tag specified (sp=%p)",
+        RTPP_LOG(pvt->mself->log, RTPP_LOG_DBUG, "no tag specified (sp=%p)",
           ctxp->sessp);
         return (-1);
     }
 
     if (ctxp->subc_args->c > 4) {
-        RTPP_LOG(RTPP_MOD_SELF.log, RTPP_LOG_DBUG, "too many arguments (sp=%p)",
+        RTPP_LOG(pvt->mself->log, RTPP_LOG_DBUG, "too many arguments (sp=%p)",
           ctxp->sessp);
         return (-1);
     }
@@ -341,7 +325,7 @@ rtpp_catch_dtmf_handle_command(struct rtpp_module_priv *pvt,
     char *l_dtmf_tag = alloca(dtmf_tag.len + 1);
     len = url_unquote2(dtmf_tag.s, l_dtmf_tag, dtmf_tag.len);
     if (len == -1) {
-        RTPP_LOG(RTPP_MOD_SELF.log, RTPP_LOG_ERR, "syntax error: invalid URL "
+        RTPP_LOG(pvt->mself->log, RTPP_LOG_ERR, "syntax error: invalid URL "
           "encoding");
         return (-1);
     }
@@ -351,7 +335,7 @@ rtpp_catch_dtmf_handle_command(struct rtpp_module_priv *pvt,
 
     if (ctxp->subc_args->c > 2) {
         if (atoi_saferange(ctxp->subc_args->v[2].s, &new_pt, 0, 127)) {
-            RTPP_LOG(RTPP_MOD_SELF.log, RTPP_LOG_ERR, "syntax error: invalid "
+            RTPP_LOG(pvt->mself->log, RTPP_LOG_ERR, "syntax error: invalid "
               "payload type: %.*s", FMTSTR(&ctxp->subc_args->v[2]));
             return (-1);
         }
@@ -364,7 +348,7 @@ rtpp_catch_dtmf_handle_command(struct rtpp_module_priv *pvt,
                     break;
 
                 default:
-                    RTPP_LOG(RTPP_MOD_SELF.log, RTPP_LOG_ERR, "syntax error: "
+                    RTPP_LOG(pvt->mself->log, RTPP_LOG_ERR, "syntax error: "
                       "invalid modifier: \"%c\"", *opt);
                     return (-1);
                 }
@@ -375,7 +359,7 @@ rtpp_catch_dtmf_handle_command(struct rtpp_module_priv *pvt,
     struct packet_processor_if dtmf_poi;
 
     if (CALL_SMETHOD(ctxp->strmp_in->pproc_manager, lookup, pvt, &dtmf_poi) == 0) {
-        rtps_c = catch_dtmf_data_ctor(ctxp, rtpp_str_fix(&dtmf_tag), new_pt);
+        rtps_c = catch_dtmf_data_ctor(ctxp, rtpp_str_fix(&dtmf_tag), new_pt, pvt->mself);
         if (rtps_c == NULL) {
             return (-1);
         }
@@ -397,11 +381,11 @@ rtpp_catch_dtmf_handle_command(struct rtpp_module_priv *pvt,
 
     old_pt = atomic_exchange(&(rtps_c->pt), new_pt);
     if (old_pt != -1)
-        RTPP_LOG(RTPP_MOD_SELF.log, RTPP_LOG_DBUG, "sp=%p, pt=%d->%d",
+        RTPP_LOG(pvt->mself->log, RTPP_LOG_DBUG, "sp=%p, pt=%d->%d",
           ctxp->strmp_in, old_pt, new_pt);
     old_act = atomic_exchange(&(rtps_c->act), new_act);
     if (old_act != new_act)
-        RTPP_LOG(RTPP_MOD_SELF.log, RTPP_LOG_DBUG, "sp=%p, act=%d->%d",
+        RTPP_LOG(pvt->mself->log, RTPP_LOG_DBUG, "sp=%p, act=%d->%d",
           ctxp->strmp_in, old_act, new_act);
     RTPP_OBJ_DECREF(&dtmf_poi);
     return (0);
@@ -434,17 +418,14 @@ rtpp_catch_dtmf_enqueue(const struct pkt_proc_ctx *pktx)
     wi = rtpp_wi_malloc_udata((void **)&wip, sizeof(struct wipkt));
     if (wi == NULL)
         return (PPROC_ACT_DROP);
-    RTPP_OBJ_INCREF(pktx->pktp);
+    RTPP_OBJ_BORROW(wi, pktx->pktp);
     /* we need to duplicate the tag and state */
     wip->edata = rtps_c->edata;
-    RTPP_OBJ_INCREF(rtps_c->edata);
+    RTPP_OBJ_BORROW(wi, rtps_c->edata);
     wip->pkt = pktx->pktp;
-    RTPP_OBJ_INCREF(rtps_c->rtdp);
+    RTPP_OBJ_BORROW(wi, rtps_c->rtdp);
     wip->rtdp = rtps_c->rtdp;
-    if (rtpp_queue_put_item(wi, RTPP_MOD_SELF.wthr.mod_q) != 0) {
-        RTPP_OBJ_DECREF(rtps_c->rtdp);
-        RTPP_OBJ_DECREF(rtps_c->edata);
-        RTPP_OBJ_DECREF(pktx->pktp);
+    if (rtpp_queue_put_item(wi, rtps_c->mself->wthr.mod_q) != 0) {
         RTPP_OBJ_DECREF(wi);
         return (PPROC_ACT_DROP);
     }
@@ -452,7 +433,7 @@ rtpp_catch_dtmf_enqueue(const struct pkt_proc_ctx *pktx)
 }
 
 static struct rtpp_module_priv *
-rtpp_catch_dtmf_ctor(const struct rtpp_cfg *cfsp)
+rtpp_catch_dtmf_ctor(const struct rtpp_cfg *cfsp, struct rtpp_minfo *mself)
 {
     struct rtpp_module_priv *pvt;
 
@@ -461,6 +442,7 @@ rtpp_catch_dtmf_ctor(const struct rtpp_cfg *cfsp)
         goto e0;
     }
     pvt->notifier = cfsp->rtpp_notify_cf;
+    pvt->mself = mself;
     return (pvt);
 
 e0:

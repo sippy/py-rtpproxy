@@ -656,6 +656,9 @@ enable_option_checking=no
 ac_subst_vars='am__EXEEXT_FALSE
 am__EXEEXT_TRUE
 LTLIBOBJS
+LIB_SRTP2
+LIB_SSL
+LIB_CRYPTO
 OPT_CFLAGS
 SIZEOF_TIME_T
 LIBS_UNWIND
@@ -855,6 +858,7 @@ enable_lto
 enable_librtpproxy
 enable_noinst
 enable_silent
+enable_static_crypto
 enable_docs
 with_xsltproc
 with_xsltproc_flags
@@ -1518,6 +1522,7 @@ Optional Features:
   --enable-librtpproxy    Build librtpproxy for instrumentation
   --enable-noinst         Enable building noinst binaries (default is yes)
   --enable-silent         Less verbose build
+  --enable-static-crypto  Link statically against libssl, libcrypto, libsrtp2
   --enable-docs           enable generation of documentation
 
 Optional Packages:
@@ -13648,6 +13653,26 @@ esac
 fi
 
 
+# Check whether --enable-static-crypto was given.
+if test ${enable_static_crypto+y}
+then :
+  enableval=$enable_static_crypto; ENABLE_STATIC_CRYPTO=$enableval
+else case e in #(
+  e) ENABLE_STATIC_CRYPTO=no ;;
+esac
+fi
+
+
+if test "$ENABLE_STATIC_CRYPTO" = yes; then
+  LIB_CRYPTO='-l:libcrypto.a'
+  LIB_SSL='-l:libssl.a'
+  LIB_SRTP2='-l:libsrtp2.a'
+else
+  LIB_CRYPTO='-lcrypto'
+  LIB_SSL='-lssl'
+  LIB_SRTP2='-lsrtp2'
+fi
+
 # Checks for libraries.
 
 if test "$enable_systemd" = 'yes'
@@ -14160,6 +14185,8 @@ fi
 
 if test "$found_libsrtp2" = yes
 then
+  save_LIBS="${LIBS}"
+  LIBS="${LIBS} ${LIB_CRYPTO}"
   { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for srtp_protect_mki in -lsrtp2" >&5
 printf %s "checking for srtp_protect_mki in -lsrtp2... " >&6; }
 if test ${ac_cv_lib_srtp2_srtp_protect_mki+y}
@@ -14257,7 +14284,7 @@ printf "%s\n" "$ac_cv_lib_srtp2_srtp_init" >&6; }
 if test "x$ac_cv_lib_srtp2_srtp_init" = xyes
 then :
 
-   LIBS_SRTP="-lsrtp2"
+   LIBS_SRTP="${LIB_SRTP2} ${LIB_CRYPTO}"
    # Test program to check if the srtp_protect function accepts size_t* argument
    { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking 'srtp_protect()' last argument type" >&5
 printf %s "checking 'srtp_protect()' last argument type... " >&6; }
@@ -14292,6 +14319,7 @@ rm -f core conftest.err conftest.$ac_objext conftest.beam conftest.$ac_ext
    CFLAGS="$original_cflags"
    { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: $srtp_protect_lastarg" >&5
 printf "%s\n" "$srtp_protect_lastarg" >&6; }
+   LIBS="${save_LIBS}"
 
 printf "%s\n" "#define SRTP_PROTECT_LASTARG ${srtp_protect_lastarg}" >>confdefs.h
 
@@ -14358,7 +14386,7 @@ fi
 printf "%s\n" "$ac_cv_lib_srtp_srtp_init" >&6; }
 if test "x$ac_cv_lib_srtp_srtp_init" = xyes
 then :
-  LIBS_SRTP="-lsrtp"
+  LIBS_SRTP="${LIB_SRTP2} ${LIB_CRYPTO}"
 
 printf "%s\n" "#define ENABLE_SRTP 1" >>confdefs.h
 
@@ -15854,7 +15882,7 @@ then
 AM_DEFAULT_VERBOSITY=0
 fi
 
-ac_config_files="$ac_config_files Makefile src/Makefile makeann/Makefile extractaudio/Makefile libexecinfo/Makefile modules/Makefile modules/acct_csv/Makefile modules/acct_rtcp_hep/Makefile modules/catch_dtmf/Makefile modules/badmod/Makefile libxxHash/Makefile libre/Makefile modules/dtls_gw/Makefile modules/ice_lite/Makefile pertools/Makefile pertools/udp_contention/Makefile libucl/Makefile python/sippy_lite/sippy/Time/clock_dtime.py doc/Makefile"
+ac_config_files="$ac_config_files Makefile src/Makefile makeann/Makefile extractaudio/Makefile libexecinfo/Makefile modules/Makefile modules/acct_csv/Makefile modules/acct_rtcp_hep/Makefile modules/catch_dtmf/Makefile modules/badmod/Makefile libxxHash/Makefile libre/Makefile modules/dtls_gw/Makefile modules/ice_lite/Makefile pertools/Makefile pertools/udp_contention/Makefile libucl/Makefile doc/Makefile"
 
 
 if test -z "$TESTS_EXIST_TRUE"; then :
@@ -15873,6 +15901,9 @@ if test -z "$BUILD_ELPERIODIC_TRUE"; then :
 
 
 fi
+
+
+
 
 
 
@@ -16999,7 +17030,6 @@ do
     "pertools/Makefile") CONFIG_FILES="$CONFIG_FILES pertools/Makefile" ;;
     "pertools/udp_contention/Makefile") CONFIG_FILES="$CONFIG_FILES pertools/udp_contention/Makefile" ;;
     "libucl/Makefile") CONFIG_FILES="$CONFIG_FILES libucl/Makefile" ;;
-    "python/sippy_lite/sippy/Time/clock_dtime.py") CONFIG_FILES="$CONFIG_FILES python/sippy_lite/sippy/Time/clock_dtime.py" ;;
     "doc/Makefile") CONFIG_FILES="$CONFIG_FILES doc/Makefile" ;;
     "tests/Makefile") CONFIG_FILES="$CONFIG_FILES tests/Makefile" ;;
 

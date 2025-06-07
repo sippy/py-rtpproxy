@@ -36,8 +36,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "config.h"
+
 #include "rtpp_types.h"
 #include "rtpp_defines.h"
+#include "rtpp_cfg.h"
+#include "rtpp_log.h"
+#include "rtpp_log_obj.h"
 #include "rtpp_network.h"
 #include "rtpp_mallocs.h"
 #include "rtpp_bindaddrs.h"
@@ -93,11 +98,14 @@ host2bindaddr(struct rtpp_bindaddrs *pub, const char *host, int pf,
      * If user specified * then change it to NULL,
      * that will make getaddrinfo to return addr_any socket
      */
-    if (host && (strcmp(host, "*") == 0))
+    if (host != NULL && is_wildcard(host, pf))
         host = NULL;
 
-    if ((ai_flags & AI_ADDRCONFIG) && host == NULL)
-        ai_flags ^= AI_ADDRCONFIG;
+    if (host != NULL) {
+        ai_flags |= is_numhost(host, pf) ? AI_NUMERICHOST : 0;
+    } else {
+        ai_flags &= ~AI_ADDRCONFIG;
+    }
 
     if ((n = resolve(sstosa(&ia), pf, host, SERVICE, ai_flags)) != 0) {
         *ep = gai_strerror(n);
@@ -139,6 +147,34 @@ rtpp_bindaddrs_dtor(struct rtpp_bindaddrs *pub)
     free(cf);
 }
 
+static const struct sockaddr *
+rtpp_bindaddrs_local4remote(struct rtpp_bindaddrs *pub, const struct rtpp_cfg *cfsp,
+  struct rtpp_log *log, int pf, const char *host, const char *port)
+{
+    struct sockaddr_storage local_addr;
+    const struct sockaddr *rval;
+    const char *errmsg;
+
+    int ai_flags = cfsp->no_resolve ? AI_NUMERICHOST : 0;
+    int n = resolve(sstosa(&local_addr), pf, host, port, ai_flags);
+    if (n != 0) {
+        RTPP_LOG(log, RTPP_LOG_ERR, "invalid remote address: %s: %s", host,
+          gai_strerror(n));
+        return (NULL);
+    }
+    if (local4remote(sstosa(&local_addr), &local_addr) == -1) {
+        RTPP_LOG(log, RTPP_LOG_ERR, "can't find local address for remote address: %s",
+          host);
+        return (NULL);
+    }
+    rval = addr2bindaddr(pub, sstosa(&local_addr), &errmsg);
+    if (rval == NULL) {
+        RTPP_LOG(log, RTPP_LOG_ERR, "invalid local address: %s", errmsg);
+        return (NULL);
+    }
+    return (rval);
+}
+
 struct rtpp_bindaddrs *
 rtpp_bindaddrs_ctor(void)
 {
@@ -153,6 +189,7 @@ rtpp_bindaddrs_ctor(void)
     cf->pub.host2 = host2bindaddr;
     cf->pub.foraf = bindaddr4af;
     cf->pub.dtor = rtpp_bindaddrs_dtor;
+    cf->pub.local4remote = rtpp_bindaddrs_local4remote;
     return (&(cf->pub));
 e1:
     free(cf);

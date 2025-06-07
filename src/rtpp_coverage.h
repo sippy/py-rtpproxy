@@ -28,11 +28,7 @@
 #ifndef _RTPP_COVERAGE_H
 #define _RTPP_COVERAGE_H
 
-/* check in gcc sources gcc/gcov-io.h for the prototype */
-void __attribute__((weak))
-__gcov_flush(void)
-{
-
-}
+void rtpp_gcov_flush(void);
+int is_gcov_on(void);
 
 #endif /* _RTPP_COVERAGE_H */

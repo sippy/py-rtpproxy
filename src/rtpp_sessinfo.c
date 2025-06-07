@@ -199,7 +199,6 @@ e7:
     rtpp_polltbl_hst_dtor(&pvt->hst_rtp);
 e6:
     RTPP_OBJ_DECREF(&(pvt->pub));
-    free(pvt);
     return (NULL);
 }
 
@@ -210,7 +209,6 @@ rtpp_sessinfo_dtor(struct rtpp_sessinfo_priv *pvt)
     rtpp_sessinfo_fin(&(pvt->pub));
     rtpp_polltbl_hst_dtor(&pvt->hst_rtp);
     rtpp_polltbl_hst_dtor(&pvt->hst_rtcp);
-    free(pvt);
 }
 
 static int
@@ -373,19 +371,16 @@ rtpp_polltbl_free(struct rtpp_polltbl *ptbl)
 {
     int i;
 
-    if (ptbl->aloclen == 0) {
-        return;
-    }
-    if (ptbl->curlen > 0) {
+    if (ptbl->aloclen != 0) {
         for (i = 0; i < ptbl->curlen; i++) {
             int fd = CALL_SMETHOD(ptbl->mds[i].skt, getfd);
             rtpp_epoll_ctl(ptbl->epfd, EPOLL_CTL_DEL, fd, NULL);
             RTPP_OBJ_DECREF(ptbl->mds[i].skt);
         }
+        free(ptbl->mds);
     }
     close(ptbl->wakefd[0]);
     close(ptbl->epfd);
-    free(ptbl->mds);
 }
 
 static int
