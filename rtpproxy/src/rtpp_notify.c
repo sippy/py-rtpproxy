@@ -148,7 +148,6 @@ e2:
     rtpp_queue_destroy(pvt->nqueue);
 e1:
     RTPP_OBJ_DECREF(&(pvt->pub));
-    free(pvt);
 e0:
     return (NULL);
 }
@@ -161,7 +160,6 @@ rtpp_notify_dtor(struct rtpp_notify_priv *pvt)
     pthread_join(pvt->thread_id, NULL);
     rtpp_queue_destroy(pvt->nqueue);
     RTPP_OBJ_DECREF(pvt->glog);
-    free(pvt);
 }
 
 static int
@@ -204,6 +202,7 @@ reconnect_handler(const struct rtpp_notify_wi *wi)
 {
 
     assert (wi->rttp->connected == 0);
+    assert (wi->rttp->socket_type != RTPP_TNS_FD);
 
     if (wi->rttp->fd == -1) {
         RTPP_LOG(wi->glog, RTPP_LOG_DBUG, "connecting %s socket", wi->ntype);
@@ -211,7 +210,7 @@ reconnect_handler(const struct rtpp_notify_wi *wi)
         RTPP_LOG(wi->glog, RTPP_LOG_DBUG, "reconnecting %s socket", wi->ntype);
         close(wi->rttp->fd);
     }
-    wi->rttp->fd = socket(wi->rttp->socket_type, SOCK_STREAM, 0);
+    wi->rttp->fd = socket(RTPP_TNT_STYPE(wi->rttp), SOCK_STREAM, 0);
     if (wi->rttp->fd == -1) {
         RTPP_ELOG(wi->glog, RTPP_LOG_ERR, "can't create %s socket", wi->ntype);
         return;
