@@ -3,6 +3,11 @@ from setuptools import setup, Extension, Command
 from setuptools.command.build import build
 import subprocess
 from os import environ
+from sys import path as sys_path
+from os.path import realpath, dirname
+
+sys_path.insert(0, realpath(dirname(__file__)))
+from build_tools.CheckVersion import CheckVersion
 
 
 class CustomCommand(Command):
@@ -54,6 +59,7 @@ def main():
         cmdclass={
             'build': CustomBuild,
             'build_custom': CustomCommand,
+            'checkversion': CheckVersion,
         },
         classifiers=[
             'Programming Language :: Python :: 3',
