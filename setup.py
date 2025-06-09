@@ -6,7 +6,9 @@ from os import environ
 from sys import path as sys_path
 from os.path import realpath, dirname
 
-sys_path.insert(0, realpath(dirname(__file__)))
+src_dir = realpath(dirname(__file__))
+
+sys_path.insert(0, src_dir)
 from build_tools.CheckVersion import CheckVersion
 
 
@@ -51,6 +53,9 @@ def main():
         )
     ]
 
+    with open(src_dir + "/README.md", "r") as fh:
+        long_description = fh.read()
+
     setup(
         name='rtp.io',
         version='0.9',
@@ -65,6 +70,8 @@ def main():
             'Programming Language :: Python :: 3',
             'Programming Language :: C',
         ],
+        long_description=long_description,
+        long_description_content_type='text/markdown',
     )
 
 if __name__ == '__main__':
